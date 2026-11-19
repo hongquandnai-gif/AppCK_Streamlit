@@ -5,13 +5,17 @@
 # ============================================================
 
 # --- Nhóm "Chỉ số" (để tab_historical chọn và vẽ) ---
-INDEX_SYMBOLS = {"VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSML"}
+INDEX_SYMBOLS = {
+    "VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSML", "VNSMALL",
+    "HNXINDEX", "HNXUPCOMINDEX", "VN100", "VNALL",
+}
 
 # Mapping Ngành Gốc (Thủ công) - Giữ nguyên ngành kinh doanh thực tế của từng mã
 BASE_INDUSTRIES_MAPPING = {
     # ------------------ Chỉ số ------------------
     "VNINDEX": "Chỉ số", "VN30": "Chỉ số", "HNX": "Chỉ số", "UPCOM": "Chỉ số",
-    "VNMID": "Chỉ số", "VNSML": "Chỉ số", "VNALL": "Chỉ số", "VN100": "Chỉ số",
+    "VNMID": "Chỉ số", "VNSMALL": "Chỉ số", "VNSML": "Chỉ số",
+    "VNALL": "Chỉ số", "VN100": "Chỉ số",
 
     # ------------------ Ngân hàng ------------------
     "VCB": "Ngân hàng", "BID": "Ngân hàng", "CTG": "Ngân hàng", "MBB": "Ngân hàng",
