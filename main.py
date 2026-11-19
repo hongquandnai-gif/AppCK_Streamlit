@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import DateOffset
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -39,7 +41,7 @@ from core.ssi_client import (
 )
 
 # ==============================================================================
-# CẤU HÌNH TRANG & CSS TỐI ƯU DASHBOARD
+# 1. CẤU HÌNH TRANG & CSS CHUẨN V11 PRO
 # ==============================================================================
 st.set_page_config(
     page_title="V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket",
@@ -50,50 +52,200 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.2rem; padding-bottom: 1rem; max-width: 98%; }
+    /* Khắc phục lỗi bị thanh header của Streamlit Cloud đè mất tiêu đề */
+    .block-container {
+        padding-top: 3.3rem !important;
+        padding-bottom: 1.5rem !important;
+        max-width: 98.5% !important;
+    }
+
+    /* Thanh Top Header nền xanh đen chuẩn main_window.py */
+    .v11-header {
+        background-color: #0f172a;
+        padding: 12px 20px;
+        border-radius: 10px 10px 0 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #1e293b;
+    }
+    .v11-title {
+        color: #38bdf8;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+        margin: 0;
+    }
+    .ws-badge-on {
+        background-color: #064e3b; color: #34d399; padding: 5px 14px;
+        border-radius: 999px; font-weight: 700; font-size: 13px;
+        border: 1px solid #059669;
+    }
+    .ws-badge-off {
+        background-color: #7f1d1d; color: #fca5a5; padding: 5px 14px;
+        border-radius: 999px; font-weight: 700; font-size: 13px;
+        border: 1px solid #dc2626;
+    }
+
+    /* Thanh Navigation 5 Workspace dạng phẳng, bỏ nút tròn radio */
+    div[data-testid="stRadio"] > div[role="radiogroup"] {
+        background-color: #0f172a;
+        padding: 8px 16px 12px 16px;
+        border-radius: 0 0 10px 10px;
+        gap: 10px;
+        margin-top: -16px;
+        margin-bottom: 10px;
+    }
+    div[data-testid="stRadio"] label {
+        background-color: #1e293b;
+        color: #cbd5e1 !important;
+        padding: 8px 18px !important;
+        border-radius: 7px !important;
+        border: 1px solid #334155 !important;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+    div[data-testid="stRadio"] label:hover {
+        background-color: #334155;
+        color: #ffffff !important;
+    }
+    div[data-testid="stRadio"] label > div:first-child {
+        display: none !important;
+    }
+    div[data-testid="stRadio"] label:has(input:checked) {
+        background-color: #0284c7 !important;
+        color: #ffffff !important;
+        border-color: #38bdf8 !important;
+    }
+    div[data-testid="stRadio"] label:has(input:checked) p {
+        color: #ffffff !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stRadio"] label p {
+        color: inherit !important;
+        font-size: 14px !important;
+        margin: 0 !important;
+    }
+
+    /* Thẻ KPI Cards */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
-        border: 1px solid #e2e8f0;
+        border: 1px solid #cbd5e1;
         border-left: 4px solid #0284c7;
         padding: 10px 14px;
         border-radius: 8px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
     }
-    .ws-badge-on {
-        background-color: #dcfce7; color: #166534; padding: 4px 12px;
-        border-radius: 999px; font-weight: 700; font-size: 13px;
+
+    /* Sub-tabs */
+    button[data-baseweb="tab"] {
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        padding: 8px 16px !important;
     }
-    .ws-badge-off {
-        background-color: #fee2e2; color: #991b1b; padding: 4px 12px;
-        border-radius: 999px; font-weight: 700; font-size: 13px;
+
+    /* Legend chip cho Treemap */
+    .tm-legend-bar {
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        margin: 6px 0 10px 0; font-size: 12px; font-weight: 700;
+    }
+    .tm-chip {
+        border-radius: 6px; padding: 3px 10px; color: #ffffff;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Khởi động SSI WebSocket Manager & Tải danh sách mã SSI
+# ==============================================================================
+# 2. HÀM TÔ MÀU BẢNG DỮ LIỆU ĐỒNG BỘ APP GỐC (KHÔNG DÙNG MATPLOTLIB)
+# ==============================================================================
+def _color_status(val):
+    s = str(val).upper()
+    if any(k in s for k in ["DẪN DẮT", "TRÊN", "ĐẠT (FULL)", "BUY", "CHUẨN", "CHỐT LỜI", "MUA THÊM", "GIAI ĐOẠN 2", "POWER PLAY"]):
+        return "color: #059669; font-weight: 700;"
+    if any(k in s for k in ["YẾU", "DƯỚI", "SELL", "CẮT LỖ", "QUÁ", "GÃY", "GIAI ĐOẠN 4", "CẢNH BÁO"]):
+        return "color: #dc2626; font-weight: 700;"
+    if any(k in s for k in ["TRUNG LẬP", "CHẠM", "CHỜ", "NỔ VOL", "KHÓA LÃI", "GIAI ĐOẠN 3", "QUAN SÁT"]):
+        return "color: #d97706; font-weight: 700;"
+    return ""
+
+
+def _color_signed(val):
+    try:
+        v = float(val)
+        if v > 0:
+            return "color: #059669; font-weight: 700;"
+        if v < 0:
+            return "color: #dc2626; font-weight: 700;"
+        return "color: #d97706; font-weight: 600;"
+    except Exception:
+        return ""
+
+
+def _color_pct_strength(val):
+    try:
+        v = float(val)
+        if v >= 50:
+            return "color: #059669; font-weight: 700;"
+        if v <= 30:
+            return "color: #dc2626; font-weight: 700;"
+        return "color: #d97706; font-weight: 600;"
+    except Exception:
+        return ""
+
+
+def _color_pct_weak(val):
+    try:
+        v = float(val)
+        if v >= 50:
+            return "color: #dc2626; font-weight: 700;"
+        return ""
+    except Exception:
+        return ""
+
+
+def _color_rs(val):
+    try:
+        v = float(val)
+        if v >= 90:
+            return "color: #7c3aed; font-weight: 700;"
+        if v >= 80:
+            return "color: #059669; font-weight: 700;"
+        return "color: #d97706; font-weight: 700;"
+    except Exception:
+        return ""
+
+
+def _color_purple(_val):
+    return "color: #9333ea; font-weight: 700;"
+
+
+def _color_vol_score(val):
+    try:
+        return "color: #059669; font-weight: 700;" if float(val) >= 1.5 else ""
+    except Exception:
+        return ""
+
+
+# ==============================================================================
+# 3. KHỞI TẠO SSI WEBSOCKET & HEADER V11 PRO
+# ==============================================================================
 ws_mgr = get_ssi_ws_manager()
 ssi_stocks_meta = fetch_ssi_stock_list("hose")
 TODAY_VN = vn_today()
+vn_clock = vn_now().strftime("%d/%m/%Y %H:%M")
 
+badge_html = (
+    f'<span class="ws-badge-on">🟢 SSI WebSocket Connected ({len(ssi_stocks_meta)} mã HOSE) • {vn_clock}</span>'
+    if ws_mgr.is_connected else
+    f'<span class="ws-badge-off">🟡 SSI WebSocket Đang kết nối • {vn_clock}</span>'
+)
 
-# ==============================================================================
-# THANH ĐIỀU HƯỚNG ĐỈNH (TOP NAVIGATION BAR - 5 WORKSPACES)
-# ==============================================================================
-hdr_col1, hdr_col2 = st.columns([3, 1.3])
-with hdr_col1:
-    st.markdown("### 📊 V11 PRO — Hệ Thống Phân Tích Định Lượng & SSI Realtime")
-with hdr_col2:
-    vn_clock = vn_now().strftime("%d/%m/%Y %H:%M")
-    ws_status_html = (
-        f'<div style="text-align:right; padding-top:8px;">'
-        f'<span class="ws-badge-on">🟢 SSI WS ({len(ssi_stocks_meta)} mã) • {vn_clock}</span>'
-        f'</div>'
-        if ws_mgr.is_connected else
-        f'<div style="text-align:right; padding-top:8px;">'
-        f'<span class="ws-badge-off">🟡 SSI WS Reconnecting • {vn_clock}</span>'
-        f'</div>'
-    )
-    st.markdown(ws_status_html, unsafe_allow_html=True)
+st.markdown(f"""
+<div class="v11-header">
+    <div class="v11-title">📊 V11 PRO — Hệ Thống Phân Tích Định Lượng & SSI Realtime</div>
+    <div>{badge_html}</div>
+</div>
+""", unsafe_allow_html=True)
 
 workspace = st.radio(
     "Workspace",
@@ -107,7 +259,6 @@ workspace = st.radio(
     horizontal=True,
     label_visibility="collapsed",
 )
-st.divider()
 
 
 # ==============================================================================
@@ -122,20 +273,16 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 
     # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP ---
     with t1:
-        c1, c2, c3 = st.columns([1.2, 1.5, 3])
-        with c1:
-            idx_date = st.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
-        with c2:
-            selected_indices = st.multiselect(
-                "Chọn chỉ số hiển thị",
-                ["VNINDEX", "VN30", "HNX", "UPCOM"],
-                default=["VNINDEX", "VN30", "HNX", "UPCOM"],
-            )
-        with c3:
-            st.write("")
-            if st.button("🔄 Làm mới dữ liệu Intraday & Đồng bộ WebSocket", type="primary"):
-                ws_mgr.subscribe(selected_indices)
-                st.cache_data.clear()
+        c1, c2, c3 = st.columns([1.2, 2.2, 1.4], vertical_alignment="bottom")
+        idx_date = c1.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
+        selected_indices = c2.multiselect(
+            "Chọn chỉ số hiển thị",
+            ["VNINDEX", "VN30", "HNX", "UPCOM"],
+            default=["VNINDEX", "VN30", "HNX", "UPCOM"],
+        )
+        if c3.button("🔄 Làm mới Intraday & WS", type="primary", width="stretch"):
+            ws_mgr.subscribe(selected_indices)
+            st.cache_data.clear()
 
         if selected_indices:
             ws_mgr.subscribe(selected_indices)
@@ -149,49 +296,58 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             )
 
             for i, sym in enumerate(selected_indices[:4]):
-                df_1m = fetch_ssi_ohlcv(sym, idx_date - timedelta(days=5), idx_date, "1")
+                df_1m = fetch_ssi_ohlcv(sym, idx_date - timedelta(days=6), idx_date, "1")
                 df_d = fetch_ssi_ohlcv(sym, idx_date - timedelta(days=15), idx_date, "D")
 
-                prev_close = None
-                if not df_d.empty:
-                    df_prev = df_d[df_d.index.date < idx_date]
-                    if not df_prev.empty:
-                        prev_close = float(df_prev["Close"].iloc[-1])
-
                 last_px = delta = pct = vol = 0.0
-                if not df_1m.empty:
-                    last_day = df_1m.index[-1].date()
-                    df_day = df_1m[df_1m.index.date == last_day]
-                    last_px = float(df_day["Close"].iloc[-1])
-                    vol = float(df_day["Volume"].sum())
-                    if prev_close:
-                        delta = last_px - prev_close
-                        pct = (delta / prev_close) * 100.0
+                trade_date_str = idx_date.strftime("%d/%m")
+                prev_close = None
 
-                    if sym in live_ticks and live_ticks[sym].get("last"):
-                        last_px = float(live_ticks[sym]["last"])
-                        if prev_close:
+                if not df_1m.empty:
+                    df_1m = df_1m[df_1m.index.date <= idx_date]
+                    if not df_1m.empty:
+                        actual_trade_date = df_1m.index[-1].date()
+                        trade_date_str = actual_trade_date.strftime("%d/%m")
+                        df_day = df_1m[df_1m.index.date == actual_trade_date]
+
+                        if not df_d.empty:
+                            df_prev = df_d[df_d.index.date < actual_trade_date]
+                            if not df_prev.empty:
+                                prev_close = float(df_prev["Close"].iloc[-1])
+
+                        last_px = float(df_day["Close"].iloc[-1])
+                        vol = float(df_day["Volume"].sum())
+
+                        # Ưu tiên giá Realtime WebSocket nếu trùng ngày hôm nay
+                        if actual_trade_date == TODAY_VN and sym in live_ticks and live_ticks[sym].get("last"):
+                            last_px = float(live_ticks[sym]["last"])
+                            if live_ticks[sym].get("volume"):
+                                vol = float(live_ticks[sym]["volume"])
+
+                        if prev_close and prev_close > 0:
                             delta = last_px - prev_close
                             pct = (delta / prev_close) * 100.0
 
-                    r_idx, c_idx = (i // 2) + 1, (i % 2) + 1
-                    line_col = "#10b981" if delta >= 0 else "#ef4444"
-                    fig_idx.add_trace(
-                        go.Scatter(
-                            x=df_day.index, y=df_day["Close"],
-                            mode="lines", name=sym, line=dict(color=line_col, width=2),
-                        ),
-                        row=r_idx, col=c_idx,
-                    )
-                    if prev_close:
-                        fig_idx.add_hline(
-                            y=prev_close, line_dash="dash", line_color="#64748b",
+                        r_idx, c_idx = (i // 2) + 1, (i % 2) + 1
+                        line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#f59e0b")
+                        fig_idx.add_trace(
+                            go.Scatter(
+                                x=df_day.index, y=df_day["Close"],
+                                mode="lines", name=sym,
+                                line=dict(color=line_col, width=2),
+                                fill="tozeroy" if prev_close is None else None,
+                            ),
                             row=r_idx, col=c_idx,
                         )
+                        if prev_close:
+                            fig_idx.add_hline(
+                                y=prev_close, line_dash="dash", line_color="#64748b",
+                                row=r_idx, col=c_idx,
+                            )
 
                 with cols_kpi[i]:
                     st.metric(
-                        label=f"{sym} (KL: {vol:,.0f})",
+                        label=f"{sym} ({trade_date_str}) • KL: {vol:,.0f}",
                         value=f"{last_px:,.2f}",
                         delta=f"{delta:+.2f} ({pct:+.2f}%)",
                     )
@@ -201,12 +357,22 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 
     # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP ---
     with t2:
-        col_tm1, col_tm2 = st.columns([1.2, 4])
-        with col_tm1:
-            tm_date = st.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
-        with col_tm2:
-            st.write("")
-            run_tm = st.button("🗺️ Tạo Bản Đồ Nhiệt Dòng Tiền", type="primary")
+        c1, c2 = st.columns([1.3, 1.5], vertical_alignment="bottom")
+        tm_date = c1.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
+        run_tm = c2.button("🗺️ Tạo Bản Đồ Nhiệt Dòng Tiền", type="primary", width="stretch")
+
+        st.markdown("""
+        <div class="tm-legend-bar">
+            <span style="color:#334155;">Chú thích:</span>
+            <span class="tm-chip" style="background:#0284c7;">≤ −6.5% (Sàn)</span>
+            <span class="tm-chip" style="background:#dc2626;">−6.5% ~ −2%</span>
+            <span class="tm-chip" style="background:#ef4444;">−2% ~ 0%</span>
+            <span class="tm-chip" style="background:#f59e0b; color:#0f172a;">0% (TC)</span>
+            <span class="tm-chip" style="background:#10b981;">0% ~ +2%</span>
+            <span class="tm-chip" style="background:#059669;">+2% ~ +6.5%</span>
+            <span class="tm-chip" style="background:#9333ea;">≥ +6.5% (Trần)</span>
+        </div>
+        """, unsafe_allow_html=True)
 
         if run_tm:
             all_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
@@ -233,88 +399,152 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                             "% Thay đổi": round(pct, 2),
                             "Giá": round(c_now, 2),
                         })
+            st.session_state["tm_df"] = pd.DataFrame(rows_tm)
 
-            if rows_tm:
-                df_tm = pd.DataFrame(rows_tm)
-                fig_tm = px.treemap(
-                    df_tm,
-                    path=[px.Constant("HOSE"), "Ngành", "Mã"],
-                    values="GTGD (Tỷ)",
-                    color="% Thay đổi",
-                    color_continuous_scale=["#0284c7", "#ef4444", "#f59e0b", "#10b981", "#9333ea"],
-                    color_continuous_midpoint=0.0,
-                    hover_data=["Giá", "% Thay đổi", "GTGD (Tỷ)"],
-                )
-                fig_tm.update_layout(height=680, margin=dict(l=10, r=10, t=30, b=10))
-                st.plotly_chart(fig_tm, width="stretch")
-            else:
-                st.warning("Không có dữ liệu giao dịch trong ngày đã chọn.")
+        if "tm_df" in st.session_state and not st.session_state["tm_df"].empty:
+            df_tm = st.session_state["tm_df"]
+            fig_tm = px.treemap(
+                df_tm,
+                path=[px.Constant("HOSE"), "Ngành", "Mã"],
+                values="GTGD (Tỷ)",
+                color="% Thay đổi",
+                range_color=[-7.0, 7.0],
+                color_continuous_scale=[
+                    (0.00, "#0284c7"),
+                    (0.15, "#dc2626"),
+                    (0.45, "#ef4444"),
+                    (0.50, "#f59e0b"),
+                    (0.55, "#10b981"),
+                    (0.85, "#059669"),
+                    (1.00, "#9333ea"),
+                ],
+                hover_data=["Giá", "% Thay đổi", "GTGD (Tỷ)"],
+            )
+            fig_tm.update_traces(texttemplate="<b>%{label}</b><br>%{color:+.2f}%", textposition="middle center")
+            fig_tm.update_layout(height=680, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig_tm, width="stretch")
 
     # --- SUB-TAB 1.3: SỨC KHỎE & NGÀY PHÂN PHỐI ---
     with t3:
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns([1.2, 1, 1, 1, 1.5], vertical_alignment="bottom")
         ma_date = c1.date_input("Ngày phân tích", value=TODAY_VN, key="ma_date")
-        dd_win = c2.number_input("Cửa sổ DD (phiên)", 10, 60, 25)
-        cancel_reb = c3.number_input("Xóa DD khi hồi (%)", 3.0, 15.0, 6.0, step=0.5)
-        scan_sec = c4.checkbox("Quét sức mạnh ngành (>MA20)", value=True)
+        dd_win = c2.number_input("Cửa sổ DD", 10, 60, 25)
+        cancel_reb = c3.number_input("Xóa DD (%)", 3.0, 15.0, 6.0, step=0.5)
+        ma20_lag = c4.number_input("Độ trễ MA20", 1, 20, 1)
+        run_ma = c5.button("🩺 Phân Tích Thị Trường", type="primary", width="stretch")
 
-        if st.button("🩺 Phân Tích Sức Khỏe Thị Trường", type="primary"):
+        if run_ma:
             idx_map = fetch_batch_ohlcv_ssi(
                 ["VNINDEX", "VN30", "HNX", "UPCOM"],
                 ma_date - timedelta(days=365), ma_date, "D", max_workers=4,
             )
-            st.subheader("📋 Tổng Hợp Ngày Phân Phối & Rủi Ro")
+            summary_lines = []
             for idx_name in ["VNINDEX", "VN30", "HNX", "UPCOM"]:
                 df_i = idx_map.get(idx_name)
                 if df_i is not None and not df_i.empty:
                     dd, stall, churn, score, details = compute_distribution_days_core(
                         df_i, window=int(dd_win), cancel_rebound_pct=float(cancel_reb), return_details=True
                     )
-                    dd_dates = ", ".join([d.strftime("%d/%m") for d in details[details["type"] == "DD"].index]) if not details.empty else "—"
+                    dd_dates = ", ".join([d.strftime("%d/%m") for d in details[details["type"] == "DD"].index[-8:]]) if not details.empty else "—"
                     extra = ""
                     if idx_name == "VNINDEX":
-                        alloc = get_target_exposure_from_risk(score) * 100
-                        extra = f" | **Risk Score: `{score:.1f}` → Tỷ trọng mục tiêu: `{alloc:.0f}%`**"
-                    st.info(f"**{idx_name}**: Phân phối **{dd}** ({dd_dates}) | Stalling **{stall}** | Churning **{churn}**{extra}")
+                        close = float(df_i["Close"].iloc[-1])
+                        ma50 = float(df_i["Close"].rolling(50, min_periods=50).mean().iloc[-1])
+                        ma20 = float(df_i["Close"].rolling(20, min_periods=20).mean().iloc[-1])
+                        if pd.notna(ma50) and close < ma50:
+                            alloc_txt, reason = "0%", "Gãy MA50"
+                        elif dd >= 5 and pd.notna(ma20) and close < ma20:
+                            alloc_txt, reason = "0%", "Phân phối ≥ 5 + Dưới MA20"
+                        else:
+                            alloc_txt = f"{get_target_exposure_from_risk(score) * 100:.0f}%"
+                            reason = f"Theo Risk Score ({score:.1f})"
+                        extra = f" | **Rủi ro:** `{score:.1f}` → **Tỷ trọng:** `{alloc_txt}` ({reason})"
+                    summary_lines.append(f"**{idx_name}**: Phân phối **{dd}** ({dd_dates}) | Stalling **{stall}** | Churning **{churn}**{extra}")
 
-            if scan_sec:
-                syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind not in ("Chỉ số", "Penny") and not is_penny_stock(s)]
-                prog = st.progress(0, text="Đang quét sức mạnh các nhóm ngành...")
-                sec_dfs = fetch_batch_ohlcv_ssi(
-                    syms, ma_date - timedelta(days=150), ma_date, "D",
-                    _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
-                )
-                prog.empty()
+            syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind not in ("Chỉ số", "Penny") and not is_penny_stock(s)]
+            prog = st.progress(0, text="Đang quét sức mạnh các nhóm ngành...")
+            sec_dfs = fetch_batch_ohlcv_ssi(
+                syms, ma_date - timedelta(days=180), ma_date, "D",
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+            )
+            prog.empty()
 
-                sec_groups: dict = {}
-                for s, df_s in sec_dfs.items():
-                    if len(df_s) >= 55:
-                        ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(s, "Khác")
-                        c_last = df_s["Close"].iloc[-1]
-                        ma20 = df_s["Close"].rolling(20).mean().iloc[-1]
-                        ma50 = df_s["Close"].rolling(50).mean().iloc[-1]
-                        g = sec_groups.setdefault(ind, {"tot": 0, "a20": 0, "b50": 0})
-                        g["tot"] += 1
-                        if c_last > ma20:
-                            g["a20"] += 1
-                        if c_last < ma50:
-                            g["b50"] += 1
+            sec_groups: dict = {}
+            lag = int(ma20_lag)
+            for s, df_s in sec_dfs.items():
+                if len(df_s) >= (60 + lag):
+                    ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(s, "Khác")
+                    sub_c = df_s["Close"].iloc[-100:]
+                    m20 = sub_c.rolling(20, min_periods=20).mean()
+                    m50 = sub_c.rolling(50, min_periods=50).mean()
+                    g = sec_groups.setdefault(ind, {"tot": 0, "a20": 0, "b50": 0, "prev_sum": 0.0, "prev_cnt": 0})
+                    g["tot"] += 1
+                    if pd.notna(m20.iloc[-1]) and sub_c.iloc[-1] > m20.iloc[-1]:
+                        g["a20"] += 1
+                    if pd.notna(m50.iloc[-1]) and sub_c.iloc[-1] < m50.iloc[-1]:
+                        g["b50"] += 1
+                    p_c = sub_c.iloc[-(lag + 1):-1]
+                    p_m = m20.iloc[-(lag + 1):-1]
+                    if len(p_c) > 0:
+                        g["prev_sum"] += float(((p_c > p_m) & p_m.notna()).mean())
+                        g["prev_cnt"] += 1
 
-                col_l, col_w = st.columns(2)
-                lead_rows = [
-                    {"Ngành": k, "% > MA20": round(v["a20"] / v["tot"] * 100, 1), "Số mã": v["tot"]}
-                    for k, v in sec_groups.items() if v["tot"] > 0 and (v["a20"] / v["tot"]) > 0.5
-                ]
-                weak_rows = [
-                    {"Ngành": k, "% < MA50": round(v["b50"] / v["tot"] * 100, 1), "Số mã": v["tot"]}
-                    for k, v in sec_groups.items() if v["tot"] > 0 and (v["b50"] / v["tot"]) > 0.5
-                ]
-                with col_l:
-                    st.markdown("#### 🔥 Nhóm Ngành DẪN DẮT (> 50% mã trên MA20)")
-                    st.dataframe(pd.DataFrame(lead_rows).sort_values("% > MA20", ascending=False) if lead_rows else pd.DataFrame(), width="stretch", hide_index=True)
-                with col_w:
-                    st.markdown("#### ❄️ Nhóm Ngành SUY YẾU (> 50% mã dưới MA50)")
-                    st.dataframe(pd.DataFrame(weak_rows).sort_values("% < MA50", ascending=False) if weak_rows else pd.DataFrame(), width="stretch", hide_index=True)
+            lead_rows, weak_rows = [], []
+            for k, v in sec_groups.items():
+                if v["tot"] == 0:
+                    continue
+                pct_now = v["a20"] / v["tot"] * 100.0
+                pct_prev = (v["prev_sum"] / v["prev_cnt"] * 100.0) if v["prev_cnt"] else 0.0
+                delta_pp = pct_now - pct_prev
+                pct_b50 = v["b50"] / v["tot"] * 100.0
+                if pct_now > 50.0:
+                    lead_rows.append({
+                        "Ngành": k, "% > MA20": round(pct_now, 1),
+                        "Trước đó": round(pct_prev, 1), "Thay đổi": round(delta_pp, 1),
+                        "Cảnh báo": "⚠️ Suy yếu" if (pct_prev - pct_now) >= 25.0 else "—",
+                        "Số mã": v["tot"],
+                    })
+                if pct_b50 > 50.0:
+                    weak_rows.append({"Ngành": k, "% < MA50": round(pct_b50, 1), "Số mã": v["tot"]})
+
+            st.session_state["ma_res"] = {
+                "summary": summary_lines,
+                "leaders": pd.DataFrame(lead_rows).sort_values("% > MA20", ascending=False) if lead_rows else pd.DataFrame(),
+                "weak": pd.DataFrame(weak_rows).sort_values("% < MA50", ascending=False) if weak_rows else pd.DataFrame(),
+            }
+
+        if "ma_res" in st.session_state:
+            res_ma = st.session_state["ma_res"]
+            for line in res_ma["summary"]:
+                st.info(line)
+
+            col_l, col_w = st.columns([1.4, 1])
+            with col_l:
+                st.markdown("#### 🔥 Nhóm Ngành DẪN DẮT (> 50% mã trên MA20)")
+                df_l = res_ma["leaders"]
+                if not df_l.empty:
+                    styled_l = (
+                        df_l.style
+                        .map(_color_pct_strength, subset=["% > MA20"])
+                        .map(_color_signed, subset=["Thay đổi"])
+                        .map(_color_status, subset=["Cảnh báo"])
+                        .format({"% > MA20": "{:.1f}%", "Trước đó": "{:.1f}%", "Thay đổi": "{:+.1f}%"})
+                    )
+                    st.dataframe(styled_l, width="stretch", hide_index=True)
+                else:
+                    st.caption("Không có nhóm ngành nào đạt chuẩn dẫn dắt.")
+            with col_w:
+                st.markdown("#### ❄️ Nhóm Ngành SUY YẾU (> 50% mã dưới MA50)")
+                df_w = res_ma["weak"]
+                if not df_w.empty:
+                    styled_w = (
+                        df_w.style
+                        .map(_color_pct_weak, subset=["% < MA50"])
+                        .format({"% < MA50": "{:.1f}%"})
+                    )
+                    st.dataframe(styled_w, width="stretch", hide_index=True)
+                else:
+                    st.caption("Không có nhóm ngành nào suy yếu > 50%.")
 
 
 # ==============================================================================
@@ -323,41 +553,61 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
     t_ma, t_mf = st.tabs(["🧭 Xu Hướng MA Ngành", "💸 Dòng Tiền Ngành (Money Flow)"])
 
+    # --- SUB-TAB 2.1: XU HƯỚNG MA NGÀNH ---
     with t_ma:
-        c1, c2, c3 = st.columns([2, 1.5, 2])
-        ind_choice = c1.selectbox("Nhóm ngành", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"])
+        c1, c2, c3, c4 = st.columns([2, 1.3, 1.3, 1.1], vertical_alignment="bottom")
+        ind_choice = c1.selectbox("Nhóm ngành", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"], key="sec_ma_ind")
         ma_asof = c2.date_input("Ngày tra cứu", value=TODAY_VN, key="sec_ma_date")
-        c3.write("")
-        if c3.button("🔄 Quét Xu Hướng MA", type="primary"):
+        run_sec_ma = c3.button("🔄 Quét Xu Hướng MA", type="primary", width="stretch")
+
+        if run_sec_ma:
             syms = get_symbols_by_industry(ind_choice, exclude_penny=(ind_choice == "Tất cả ngành"))
-            prog = st.progress(0)
+            prog = st.progress(0, text="Đang quét đường trung bình MA từ SSI...")
             dfs = fetch_batch_ohlcv_ssi(
-                syms, ma_asof - timedelta(days=400), ma_asof, "D",
+                syms, ma_asof - timedelta(days=450), ma_asof, "D",
                 _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
 
+            def _ma_stt(px, mv):
+                if pd.isna(px) or pd.isna(mv):
+                    return "—"
+                return "CHẠM" if abs(px - mv) <= 0.001 * px else ("TRÊN" if px > mv else "DƯỚI")
+
             if ind_choice == "Tất cả ngành":
-                groups = {}
+                groups: dict = {}
                 for s, df_s in dfs.items():
                     if len(df_s) >= 50:
                         ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(s, "Khác")
                         c_now = float(df_s["Close"].iloc[-1])
-                        ma20 = float(df_s["Close"].rolling(20).mean().iloc[-1])
-                        ma50 = float(df_s["Close"].rolling(50).mean().iloc[-1])
-                        g = groups.setdefault(ind, {"tot": 0, "a20": 0, "b50": 0})
+                        m20 = float(df_s["Close"].rolling(20).mean().iloc[-1])
+                        m50 = float(df_s["Close"].rolling(50).mean().iloc[-1])
+                        g = groups.setdefault(ind, {"tot": 0, "a20": 0, "b50": 0, "best_d": -1e9, "hl": ""})
                         g["tot"] += 1
-                        if c_now > ma20:
+                        if _ma_stt(c_now, m20) == "TRÊN":
                             g["a20"] += 1
-                        if c_now < ma50:
+                        if _ma_stt(c_now, m50) == "DƯỚI":
                             g["b50"] += 1
+                        if m20 > 0:
+                            d_pct = (c_now - m20) / m20 * 100.0
+                            if d_pct > g["best_d"]:
+                                g["best_d"] = d_pct
+                                g["hl"] = s
+
                 rows = []
                 for ind, g in groups.items():
-                    pct_s = round(g["a20"] / g["tot"] * 100, 1)
-                    pct_w = round(g["b50"] / g["tot"] * 100, 1)
+                    pct_s = round(g["a20"] / g["tot"] * 100.0, 1)
+                    pct_w = round(g["b50"] / g["tot"] * 100.0, 1)
                     lbl = "DẪN DẮT" if pct_s >= 50 else ("YẾU" if pct_w >= 50 else "TRUNG LẬP")
-                    rows.append({"Ngành": ind, "Phân loại": lbl, "% Mạnh (>MA20)": pct_s, "% Yếu (<MA50)": pct_w, "Tổng mã": g["tot"]})
-                st.dataframe(pd.DataFrame(rows).sort_values("% Mạnh (>MA20)", ascending=False), width="stretch", hide_index=True)
+                    rows.append({
+                        "Ngành": ind, "Phân loại": lbl,
+                        "% Mạnh (>MA20)": pct_s, "% Yếu (<MA50)": pct_w,
+                        "Tổng mã": g["tot"], "Mã nổi bật": g["hl"],
+                        "MA tham chiếu": "MA20",
+                        "Δ (%)": round(g["best_d"], 1) if g["hl"] else np.nan,
+                    })
+                st.session_state["sec_ma_df"] = pd.DataFrame(rows).sort_values(["% Mạnh (>MA20)", "% Yếu (<MA50)"], ascending=[False, True])
+                st.session_state["sec_ma_mode"] = "all"
             else:
                 rows = []
                 for s, df_s in dfs.items():
@@ -365,37 +615,72 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                         c_now = float(df_s["Close"].iloc[-1])
                         c_prev = float(df_s["Close"].iloc[-2]) if len(df_s) >= 2 else c_now
                         item = {"Mã": s, "Giá": round(c_now, 2), "% Thay đổi": round((c_now / c_prev - 1) * 100, 2)}
+                        score = 0
                         for w in MA_WINDOWS:
                             if len(df_s) >= w:
                                 mv = float(df_s["Close"].rolling(w).mean().iloc[-1])
-                                stt = "TRÊN" if c_now > mv else "DƯỚI"
+                                stt = _ma_stt(c_now, mv)
+                                if stt == "TRÊN":
+                                    score += 1
                                 item[f"MA{w}"] = f"{stt} ({mv:,.2f})"
                             else:
                                 item[f"MA{w}"] = "—"
+                        item["_score"] = score
                         rows.append(item)
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                df_grp = pd.DataFrame(rows).sort_values(["_score", "Mã"], ascending=[False, True]).drop(columns=["_score"]) if rows else pd.DataFrame()
+                st.session_state["sec_ma_df"] = df_grp
+                st.session_state["sec_ma_mode"] = "group"
 
+        if "sec_ma_df" in st.session_state and not st.session_state["sec_ma_df"].empty:
+            df_show = st.session_state["sec_ma_df"]
+            csv_bytes = df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            c4.download_button("💾 Xuất CSV", data=csv_bytes, file_name=f"sector_ma_{ma_asof}.csv", mime="text/csv", width="stretch")
+
+            if st.session_state.get("sec_ma_mode") == "all":
+                styled = (
+                    df_show.style
+                    .map(_color_status, subset=["Phân loại"])
+                    .map(_color_pct_strength, subset=["% Mạnh (>MA20)"])
+                    .map(_color_pct_weak, subset=["% Yếu (<MA50)"])
+                    .map(_color_signed, subset=["Δ (%)"])
+                    .format({"% Mạnh (>MA20)": "{:.1f}%", "% Yếu (<MA50)": "{:.1f}%", "Δ (%)": "{:+.1f}%"}, na_rep="—")
+                )
+            else:
+                ma_cols = [f"MA{w}" for w in MA_WINDOWS if f"MA{w}" in df_show.columns]
+                styled = (
+                    df_show.style
+                    .map(_color_signed, subset=["% Thay đổi"])
+                    .map(_color_status, subset=ma_cols)
+                    .format({"Giá": "{:,.2f}", "% Thay đổi": "{:+.2f}%"})
+                )
+            st.dataframe(styled, width="stretch", hide_index=True, height=560)
+
+    # --- SUB-TAB 2.2: DÒNG TIỀN NGÀNH ---
     with t_mf:
-        c1, c2, c3, c4 = st.columns([1.2, 1, 1.5, 1.2])
+        c1, c2, c3, c4 = st.columns([1.2, 1, 1.6, 1.3], vertical_alignment="bottom")
         mf_date = c1.date_input("Ngày kết thúc", value=TODAY_VN, key="mf_date")
         mf_days = c2.number_input("Số phiên", 3, 60, 10)
         mf_method = c3.selectbox("Phương pháp", ["ΔP × Vol (VNĐ)", "Signed TP × Vol (VNĐ)", "CMF × GTGD (VNĐ)"])
-        c4.write("")
-        if c4.button("💸 Phân Tích Dòng Tiền", type="primary"):
+        if c4.button("💸 Phân Tích Dòng Tiền", type="primary", width="stretch"):
             syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
-            prog = st.progress(0)
+            prog = st.progress(0, text="Đang tải dữ liệu dòng tiền toàn sàn từ SSI...")
             dfs = fetch_batch_ohlcv_ssi(
                 syms, mf_date - timedelta(days=int(mf_days) * 2 + 15), mf_date, "D",
                 _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
+            st.session_state["mf_raw_dfs"] = dfs
+            st.session_state["mf_params"] = (mf_date, int(mf_days))
 
+        if "mf_raw_dfs" in st.session_state:
+            dfs = st.session_state["mf_raw_dfs"]
+            saved_date, saved_days = st.session_state["mf_params"]
             per_ind: dict = {}
             for sym, df_s in dfs.items():
-                sub = df_s[df_s.index.date <= mf_date]
-                if len(sub) < int(mf_days) + 1:
+                sub = df_s[df_s.index.date <= saved_date]
+                if len(sub) < saved_days + 1:
                     continue
-                sub = sub.iloc[-(int(mf_days) + 1):].copy()
+                sub = sub.iloc[-(saved_days + 1):].copy()
                 hl = (sub["High"] - sub["Low"]).replace(0, np.nan)
                 sub["PrevClose"] = sub["Close"].shift(1)
                 sub["TP"] = (sub["High"] + sub["Low"] + sub["Close"]) / 3.0
@@ -408,7 +693,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                 dp_vol = float(((calc["Close"] - calc["PrevClose"]) * 1000.0 * vol).sum())
                 stpv = float((np.sign(calc["TP"] - calc["PrevTP"]) * calc["TP"] * 1000.0 * vol).sum())
                 cmf_r = float((calc["MF_mult"] * vol).sum() / vol.sum()) if vol.sum() > 0 else 0.0
-                pct = float(sub["Close"].iloc[-1] / sub["Close"].iloc[0] - 1.0) * 100.0
+                pct = float(sub["Close"].iloc[-1] / sub["Close"].iloc[0] - 1.0) * 100.0 if sub["Close"].iloc[0] > 0 else 0.0
 
                 ind = "Penny" if is_penny_stock(sym) else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác")
                 g = per_ind.setdefault(ind, {"dp": 0.0, "stp": 0.0, "cmf_num": 0.0, "tv": 0.0, "pcts": [], "cnt": 0})
@@ -431,7 +716,17 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                     "Số mã": g["cnt"],
                 })
             df_mf = pd.DataFrame(rows_mf).sort_values("Dòng tiền ròng (Tỷ VNĐ)", ascending=False)
-            st.dataframe(df_mf, width="stretch", hide_index=True)
+            styled_mf = (
+                df_mf.style
+                .map(_color_signed, subset=["Dòng tiền ròng (Tỷ VNĐ)", "CMF (N phiên)", "% Giá TB"])
+                .format({
+                    "Dòng tiền ròng (Tỷ VNĐ)": "{:+,.2f}",
+                    "Tổng GTGD (Tỷ VNĐ)": "{:,.2f}",
+                    "CMF (N phiên)": "{:+.3f}",
+                    "% Giá TB": "{:+.2f}%",
+                })
+            )
+            st.dataframe(styled_mf, width="stretch", hide_index=True, height=560)
 
 
 # ==============================================================================
@@ -446,14 +741,15 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
     # --- SUB-TAB 3.1: RADAR EOD ---
     with t_radar:
-        c1, c2, c3, c4 = st.columns([1, 1, 1.5, 1.5])
+        c1, c2, c3, c4, c5, c6 = st.columns([0.9, 0.9, 1.2, 1.0, 1.5, 1.4], vertical_alignment="bottom")
         ma_f = c1.number_input("MA Nhanh", 5, 50, 20)
         ma_m = c2.number_input("MA Trung", 20, 100, 50)
-        min_v = c3.number_input("Min Volume", 0, 10_000_000, 100_000, step=50_000)
-        c4.write("")
-        if c4.button("📡 Quét Thị Trường EOD", type="primary"):
+        min_v = c3.number_input("Min Vol", 0, 10_000_000, 100_000, step=50_000)
+        use_ftd = c4.checkbox("Bật FTD", value=True)
+        ftd_mode = c5.selectbox("Chuẩn FTD", [0, 1], format_func=lambda x: "Nâng cao (Vol > MA20)" if x == 0 else "Tiêu chuẩn (Vol > Hôm trước)", disabled=not use_ftd)
+        if c6.button("📡 Quét Thị Trường EOD", type="primary", width="stretch"):
             syms = get_symbols_by_industry("Tất cả ngành", exclude_penny=True) + ["VNINDEX"]
-            prog = st.progress(0)
+            prog = st.progress(0, text="Đang quét Radar EOD toàn sàn...")
             dfs = fetch_batch_ohlcv_ssi(
                 syms, TODAY_VN - timedelta(days=350), TODAY_VN, "D",
                 _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
@@ -461,6 +757,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             prog.empty()
 
             vni = dfs.get("VNINDEX")
+            risk_info = {"date": TODAY_VN.strftime("%d/%m/%Y"), "phase": "Không xác định", "target": 0.0, "dd": 0.0, "rally": 0, "is_ftd": False, "risk": 0.0}
             if vni is not None and not vni.empty:
                 vni["VolMA20"] = vni["Volume"].rolling(20).mean()
                 ftd_state = {"historical_peak": 0.0, "reference_peak": 0.0, "is_confirmed_uptrend": True, "rally_attempt_count": 0, "rally_low": float("inf"), "market_phase": "Uptrend"}
@@ -470,16 +767,32 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     p_v = float(vni["Volume"].iloc[i - 1]) if i > 0 else float(r["Volume"])
                     ftd_state = evaluate_market_ftd_step(
                         ftd_state, float(r["Close"]), float(r["Low"]), float(r["Volume"]),
-                        p_c, p_v, float(r["VolMA20"] or 0)
+                        p_c, p_v, float(r["VolMA20"] or 0), use_ftd=use_ftd, ftd_mode=int(ftd_mode),
                     )
                 _, _, _, risk_sc = compute_distribution_days_core(vni, window=25)
-                tgt_exp = 0.0 if not ftd_state["is_confirmed_uptrend"] else get_target_exposure_from_risk(risk_sc) * 100
+                tgt_exp = 0.0 if not ftd_state["is_confirmed_uptrend"] else (0.7 if ftd_state["market_phase"] == "Pullback" else get_target_exposure_from_risk(risk_sc))
+                ma200_vni = vni["Close"].rolling(200).mean().iloc[-1]
+                below_200 = pd.notna(ma200_vni) and float(vni["Close"].iloc[-1]) < float(ma200_vni)
+                risk_info = {
+                    "date": vni.index[-1].strftime("%d/%m/%Y"),
+                    "phase": f"{ftd_state['market_phase']} {'(<MA200)' if below_200 else ''}".strip(),
+                    "target": tgt_exp * 100.0,
+                    "dd": ftd_state["actual_drawdown"] * 100.0,
+                    "rally": ftd_state["rally_attempt_count"],
+                    "is_ftd": ftd_state["is_confirmed_uptrend"],
+                    "risk": risk_sc,
+                }
 
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Trạng thái thị trường", ftd_state["market_phase"])
-                k2.metric("Tỷ trọng khuyến nghị", f"{tgt_exp:.0f}%")
-                k3.metric("Độ sâu điều chỉnh", f"{ftd_state['actual_drawdown'] * 100:.1f}%")
-                k4.metric("Điểm Rủi Ro (Risk Score)", f"{risk_sc:.1f}")
+            sec_map: dict = {}
+            for sym, sec in HARDCODED_HOSE_INDUSTRIES_MAPPING.items():
+                if sec not in ["Chỉ số", "Penny", "Khác"] and not is_penny_stock(sym) and sym in dfs:
+                    sec_map.setdefault(sec, []).append(sym)
+
+            sec_rows = []
+            for sec, s_list in sec_map.items():
+                cnt_up = sum(1 for s in s_list if len(dfs[s]) >= int(ma_f) and float(dfs[s]["Close"].iloc[-1]) > float(dfs[s]["Close"].rolling(int(ma_f)).mean().iloc[-1]))
+                sec_rows.append({"Ngành": sec, "Sức Mạnh": round(cnt_up / len(s_list) * 100.0, 1), "Số Mã > MA": f"{cnt_up}/{len(s_list)}"})
+            sec_df = pd.DataFrame(sec_rows).sort_values("Sức Mạnh", ascending=False) if sec_rows else pd.DataFrame()
 
             stk_rows = []
             for sym, df_s in dfs.items():
@@ -491,24 +804,56 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 mam = float(df_s["Close"].rolling(int(ma_m)).mean().iloc[-1])
                 mas = float(df_s["Close"].rolling(200).mean().iloc[-1])
                 vma = float(df_s["Volume"].rolling(int(ma_f)).mean().iloc[-1])
-                if c > maf and v > min_v and vma > 0:
+                if c > maf and vma > 0:
                     full = (c > maf > mam > mas)
                     v_sc = v / vma
-                    sig = "ĐẠT (Full)" if (full and v_sc > 1.0) else ("Chờ Vol" if full else "Nổ Vol (Hồi)")
+                    brk = (v > min_v) and (v_sc > 1.0)
+                    sig = "ĐẠT (Full)" if (full and brk) else ("Chờ Vol" if full else ("Nổ Vol (Hồi)" if brk else "Tích lũy"))
                     stk_rows.append({
                         "Mã CP": sym, "Ngành": HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
-                        "Giá": round(c, 2), "Volume": int(v), "Hệ số Vol": round(v_sc, 2), "Tín Hiệu": sig,
+                        "Giá": round(c, 2), "Volume": int(v), "Hệ Số Vol": round(v_sc, 2),
+                        "Tín Hiệu": sig, "_full": full,
                     })
-            st.dataframe(pd.DataFrame(stk_rows).sort_values(["Tín Hiệu", "Hệ số Vol"], ascending=[True, False]).head(50), width="stretch", hide_index=True)
+            stk_df = pd.DataFrame(stk_rows).sort_values(["_full", "Hệ Số Vol"], ascending=[False, False]).drop(columns=["_full"]).head(50) if stk_rows else pd.DataFrame()
+            st.session_state["radar_res"] = {"risk": risk_info, "sec": sec_df, "stk": stk_df}
+
+        if "radar_res" in st.session_state:
+            rr = st.session_state["radar_res"]
+            rk = rr["risk"]
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("Ngày Cập Nhật", rk["date"])
+            k2.metric("Trạng Thái TT", rk["phase"])
+            k3.metric("Tỷ Trọng KN", f"{rk['target']:.0f}%")
+            k4.metric("Độ Sâu ĐC", f"{rk['dd']:.1f}%")
+            k5.metric("Nỗ Lực Hồi Phục", "✅ FTD" if rk["is_ftd"] else (f"Ngày {rk['rally']}" if rk["rally"] > 0 else "Chưa tạo đáy"))
+            k6.metric("Risk Score", f"{rk['risk']:.1f}")
+
+            col_s1, col_s2 = st.columns([1, 2.2])
+            with col_s1:
+                st.markdown("#### 🏆 Top Ngành Dẫn Dắt")
+                if not rr["sec"].empty:
+                    st.dataframe(
+                        rr["sec"].style.map(_color_pct_strength, subset=["Sức Mạnh"]).format({"Sức Mạnh": "{:.1f}%"}),
+                        width="stretch", hide_index=True, height=500,
+                    )
+            with col_s2:
+                st.markdown("#### 🚀 Top Cổ Phiếu Nổi Bật")
+                if not rr["stk"].empty:
+                    st.dataframe(
+                        rr["stk"].style
+                        .map(_color_vol_score, subset=["Hệ Số Vol"])
+                        .map(_color_status, subset=["Tín Hiệu"])
+                        .format({"Giá": "{:,.2f}", "Volume": "{:,.0f}", "Hệ Số Vol": "{:.2f}x"}),
+                        width="stretch", hide_index=True, height=500,
+                    )
 
     # --- SUB-TAB 3.2: MINERVINI & VCP PRO ---
     with t_min:
-        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1.5])
+        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1.6], vertical_alignment="bottom")
         min_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="min_s")
         min_end = c2.date_input("Đến ngày", value=TODAY_VN, key="min_e")
-        min_rs = c3.number_input("RS Rating tối thiểu", 50, 99, 70)
-        c4.write("")
-        if c4.button("🚀 Quét Siêu Cổ Phiếu Minervini & VCP", type="primary"):
+        min_rs = c3.number_input("RS Min", 50, 99, 70)
+        if c4.button("🚀 Quét Siêu Cổ Phiếu Minervini & VCP", type="primary", width="stretch"):
             syms = get_symbols_by_industry("Tất cả ngành", exclude_penny=True)
             prog = st.progress(0, text="Đang tải dữ liệu và tính RS Rating toàn sàn...")
             raw_m = fetch_batch_ohlcv_ssi(
@@ -516,75 +861,117 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
-            proc_map, screened, df_breadth = run_minervini_screener(raw_m, min_start, min_end, int(min_rs))
-            st.session_state["min_proc_map"] = proc_map
-            st.session_state["min_screened"] = screened
-            st.session_state["min_breadth"] = df_breadth
+            proc_map, screened, df_breadth, stats_sum = run_minervini_screener(raw_m, min_start, min_end, int(min_rs))
+            st.session_state["min_res"] = {
+                "proc_map": proc_map, "screened": screened,
+                "breadth": df_breadth, "stats": stats_sum, "end_date": min_end,
+            }
 
-        if "min_screened" in st.session_state:
-            screened = st.session_state["min_screened"]
-            proc_map = st.session_state["min_proc_map"]
-            df_breadth = st.session_state["min_breadth"]
-
-            st.subheader(f"🏆 Danh Sách Cổ Phiếu Đạt Chuẩn Stage 2 ({len(screened)} mã)")
-            st.dataframe(pd.DataFrame(screened), width="stretch", hide_index=True)
-
-            if proc_map:
-                st.markdown("---")
-                st.subheader("🔍 Chẩn Đoán Chu Kỳ & Cấu Trúc VCP Chi Tiết")
-                diag_sym = st.selectbox("Chọn mã kiểm tra", sorted(list(proc_map.keys())))
-                df_d = proc_map[diag_sym]
-                latest = df_d.iloc[-1].to_dict()
-                p_title, p_col, p_desc = evaluate_stock_phase(latest)
-                vcp = detect_vcp_pattern(df_d, min_end)
-
-                col_info, col_chart = st.columns([1.2, 2.8])
-                with col_info:
-                    st.markdown(f"**Trạng thái:** :{'green' if '2' in p_title else 'orange'}[{p_title}]")
-                    st.write(p_desc)
-                    if vcp:
-                        st.success(f"**Mô hình VCP {vcp['num_contractions']}T:** {' -> '.join([str(x)+'%' for x in vcp['ranges']])}\n\n**Pivot:** `{vcp['buy_point']:,.2f}` ({vcp['status']})")
-                    st.write(f"- **RS Rating:** `{latest.get('RS_Rating', 0)} / 99`")
-                    st.write(f"- **Giá / MA50 / MA200:** `{latest['Close']:,.2f}` / `{latest['MA50']:,.2f}` / `{latest['MA200']:,.2f}`")
-                    st.write(f"- **Cách đỉnh 52T:** `{latest['Pct_From_Peak']:+.1f}%`")
-
-                with col_chart:
-                    sub_p = df_d.tail(150)
-                    fig_vcp = go.Figure()
-                    fig_vcp.add_trace(go.Candlestick(
-                        x=sub_p.index, open=sub_p["Open"], high=sub_p["High"],
-                        low=sub_p["Low"], close=sub_p["Close"], name=diag_sym,
-                    ))
-                    for ma_col, col_hex in [("MA50", "#f97316"), ("MA150", "#8b5cf6"), ("MA200", "#ef4444")]:
-                        fig_vcp.add_trace(go.Scatter(x=sub_p.index, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.4)))
-                    if vcp:
-                        fig_vcp.add_hline(y=vcp["buy_point"], line_dash="dot", line_color="#8b5cf6", annotation_text=f"Pivot: {vcp['buy_point']:,.2f}")
-                    fig_vcp.update_layout(height=420, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
-                    st.plotly_chart(fig_vcp, width="stretch")
+        if "min_res" in st.session_state:
+            mr = st.session_state["min_res"]
+            screened, proc_map, df_breadth, stats_sum = mr["screened"], mr["proc_map"], mr["breadth"], mr["stats"]
 
             if not df_breadth.empty:
-                st.markdown("---")
-                st.subheader("🌊 Độ Rộng Thị Trường (% Mã > MA200 & % Dò Đáy 52 Tuần)")
-                fig_br = make_subplots(specs=[[{"secondary_y": True}]])
-                fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Avg_Price"], name="Giá TB HOSE", line=dict(color="#0284c7", width=2)), secondary_y=False)
-                fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Above_MA200"], name="% > MA200", line=dict(color="#f59e0b", width=1.8)), secondary_y=True)
-                fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Bottoming"], name="% Sát đáy 52T", line=dict(color="#ef4444", dash="dot")), secondary_y=True)
-                fig_br.update_layout(height=360, margin=dict(l=10, r=10, t=25, b=10))
-                st.plotly_chart(fig_br, width="stretch")
+                lb = df_breadth.iloc[-1]
+                p200, pbot, avgp = float(lb["Pct_Above_MA200"]), float(lb["Pct_Bottoming"]), float(lb["Avg_Price"])
+                if p200 >= 50:
+                    st.success(f"🟢 **UPTREND XÁC NHẬN** ({p200:.1f}% cổ phiếu > MA200)")
+                elif p200 <= 20:
+                    st.error(f"🔴 **VÙNG HOẢNG LOẠN / DÒ ĐÁY** ({p200:.1f}% > MA200 | {pbot:.1f}% sát đáy 52T)")
+                else:
+                    st.warning(f"🟡 **THỊ TRƯỜNG PHÂN HÓA** ({p200:.1f}% > MA200)")
+
+            st1, st2, st3 = st.tabs([
+                f"🏆 Siêu Cổ Phiếu ({len(screened)})",
+                "🔍 Chẩn Đoán Chu Kỳ & Chart VCP",
+                "🌊 Độ Rộng Thị Trường",
+            ])
+
+            with st1:
+                if screened:
+                    df_sc = pd.DataFrame(screened)
+                    styled_sc = (
+                        df_sc.style
+                        .map(_color_rs, subset=["RS Rating"])
+                        .map(_color_status, subset=["Chu Kỳ", "Trạng Thái Pivot"])
+                        .format({"Giá": "{:,.2f}", "% Đỉnh 52T": "{:+.1f}%", "Pivot": "{:,.2f}"}, na_rep="—")
+                    )
+                    st.dataframe(styled_sc, width="stretch", hide_index=True, height=520)
+                else:
+                    st.info("Không có mã nào thỏa mãn toàn bộ 8 tiêu chí Trend Template ở thời điểm này.")
+
+            with st2:
+                if proc_map:
+                    default_sym = screened[0]["Mã CP"] if screened else sorted(list(proc_map.keys()))[0]
+                    all_m_syms = sorted(list(proc_map.keys()))
+                    diag_sym = st.selectbox("Chọn cổ phiếu kiểm tra", all_m_syms, index=all_m_syms.index(default_sym))
+                    df_d = proc_map[diag_sym]
+                    latest = df_d.iloc[-1].to_dict()
+                    p_title, p_col, p_desc = evaluate_stock_phase(latest)
+                    vcp = detect_vcp_pattern(df_d, mr["end_date"])
+
+                    col_info, col_chart = st.columns([1.2, 2.8])
+                    with col_info:
+                        st.markdown(f"<div style='padding:10px; border-left:4px solid {p_col}; background:#ffffff; border-radius:6px;'>"
+                                    f"<b style='color:{p_col}; font-size:15px;'>{p_title}</b><br>{p_desc}</div>", unsafe_allow_html=True)
+                        if vcp:
+                            st.success(f"**VCP {vcp['num_contractions']}T:** {' -> '.join([str(x)+'%' for x in vcp['ranges']])}\n\n**Pivot:** `{vcp['buy_point']:,.2f}` ({vcp['status']})")
+                        c_val = latest["Close"]
+                        st.markdown(f"""
+                        **📋 Minervini Trend Template:**
+                        - Giá vs MA50 (`{latest['MA50']:,.2f}`): **{'🟢 Trên' if c_val > latest['MA50'] else '🔴 Dưới'}**
+                        - Giá vs MA150 (`{latest['MA150']:,.2f}`): **{'🟢 Trên' if c_val > latest['MA150'] else '🔴 Dưới'}**
+                        - Giá vs MA200 (`{latest['MA200']:,.2f}`): **{'🟢 Trên' if c_val > latest['MA200'] else '🔴 Dưới'}**
+                        - Đỉnh 52T: `{latest['Peak_52W']:,.2f}` (`{latest['Pct_From_Peak']:+.1f}%`)
+                        - Đáy 52T: `{latest['Bottom_52W']:,.2f}` (`{latest['Pct_From_Bottom']:+.1f}%`)
+                        - **RS Rating:** **`{latest.get('RS_Rating', 0)} / 99`**
+                        """)
+                    with col_chart:
+                        sub_p = df_d.tail(150)
+                        fig_vcp = go.Figure()
+                        fig_vcp.add_trace(go.Candlestick(
+                            x=sub_p.index, open=sub_p["Open"], high=sub_p["High"],
+                            low=sub_p["Low"], close=sub_p["Close"], name=diag_sym,
+                            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+                        ))
+                        for ma_col, col_hex in [("MA50", "#f97316"), ("MA150", "#8b5cf6"), ("MA200", "#ef4444")]:
+                            fig_vcp.add_trace(go.Scatter(x=sub_p.index, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.5)))
+                        if vcp:
+                            fig_vcp.add_hline(y=vcp["buy_point"], line_dash="dot", line_color="#7c3aed", annotation_text=f"Pivot: {vcp['buy_point']:,.2f}")
+                        fig_vcp.update_layout(height=460, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
+                        st.plotly_chart(fig_vcp, width="stretch")
+
+            with st3:
+                if not df_breadth.empty:
+                    lb = df_breadth.iloc[-1]
+                    b1, b2, b3, b4 = st.columns(4)
+                    b1.metric("Giá TB HOSE", f"{lb['Avg_Price']:,.1f}")
+                    b2.metric("Độ Rộng (> MA200)", f"{lb['Pct_Above_MA200']:.1f}%")
+                    b3.metric("% Sát Đáy 52T", f"{lb['Pct_Bottoming']:.1f}%")
+                    b4.metric("Sụt Giảm Từ Đỉnh", f"-{stats_sum['pct_drop']:.1f}%")
+
+                    fig_br = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Avg_Price"], name="Giá TB HOSE", line=dict(color="#0284c7", width=2)), secondary_y=False)
+                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Above_MA200"], name="% > MA200", line=dict(color="#f59e0b", width=1.8)), secondary_y=True)
+                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Bottoming"], name="% Dò đáy 52T", line=dict(color="#8b5cf6", dash="dot")), secondary_y=True)
+                    fig_br.add_hline(y=20, line_dash="dash", line_color="#ef4444", secondary_y=True)
+                    fig_br.add_hline(y=50, line_dash="dash", line_color="#94a3b8", secondary_y=True)
+                    fig_br.update_layout(height=420, margin=dict(l=10, r=10, t=25, b=10))
+                    st.plotly_chart(fig_br, width="stretch")
 
     # --- SUB-TAB 3.3: LỌC CP TĂNG MẠNH ---
     with t_gain:
-        c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.5, 1, 1.2])
+        c1, c2, c3, c4, c5, c6 = st.columns([1.1, 1.1, 1.4, 0.8, 1.5, 1.2], vertical_alignment="bottom")
         g_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=30), key="g_s")
         g_end = c2.date_input("Đến ngày", value=TODAY_VN, key="g_e")
         g_ind = c3.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="g_ind")
-        g_top = c4.selectbox("Top hiển thị", [10, 20, 30, 50], index=1)
-        c5.write("")
-        if c5.button("🚀 Lọc Cổ Phiếu", type="primary"):
+        g_top = c4.selectbox("Top", [10, 15, 20, 30, 50], index=0)
+        g_rank = c5.selectbox("Xếp hạng theo", ["Kết hợp (Hồi & Giảm từ Đỉnh)", "% Thay Đổi", "% Hồi từ Đáy"])
+        if c6.button("🚀 Lọc Cổ Phiếu", type="primary", width="stretch"):
             syms = get_symbols_by_industry(g_ind, exclude_penny=(g_ind == "Tất cả ngành"))
-            prog = st.progress(0)
+            prog = st.progress(0, text="Đang tải dữ liệu lọc cổ phiếu tăng mạnh...")
             dfs = fetch_batch_ohlcv_ssi(
-                syms, g_start - timedelta(days=7), g_end, "D",
+                syms, g_start - timedelta(days=10), g_end, "D",
                 _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
@@ -594,18 +981,41 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 if len(sub) >= 2:
                     c0, cl = float(sub["Close"].iloc[0]), float(sub["Close"].iloc[-1])
                     hmax, lmin = float(sub["High"].max()), float(sub["Low"].min())
-                    g_rows.append({
-                        "Mã CP": sym,
-                        "Ngành": HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
-                        "% Thay đổi": round((cl - c0) / c0 * 100, 2),
-                        "% Hồi từ đáy": round((cl - lmin) / lmin * 100, 2),
-                        "% Giảm từ đỉnh": round((cl - hmax) / hmax * 100, 2),
-                        "Ngày đạt đỉnh": sub["High"].idxmax().strftime("%Y-%m-%d"),
-                    })
-            if g_rows:
-                df_g = pd.DataFrame(g_rows)
-                df_g["Điểm kết hợp"] = df_g["% Hồi từ đáy"] + df_g["% Giảm từ đỉnh"]
-                st.dataframe(df_g.sort_values("Điểm kết hợp", ascending=False).head(g_top), width="stretch", hide_index=True)
+                    if c0 > 0 and lmin > 0 and hmax > 0:
+                        g_rows.append({
+                            "Mã CP": sym,
+                            "Nhóm Ngành": "Penny" if g_ind == "Penny" else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
+                            "% Thay Đổi": round((cl - c0) / c0 * 100.0, 2),
+                            "% Tăng từ Đáy": round((cl - lmin) / lmin * 100.0, 2),
+                            "% Giảm từ Đỉnh": round((cl - hmax) / hmax * 100.0, 2),
+                            "Biên Độ (H/L)": round((hmax - lmin) / c0 * 100.0, 2),
+                            "Ngày đạt đỉnh": sub["High"].idxmax().strftime("%d-%m-%Y"),
+                        })
+            st.session_state["gainers_df"] = pd.DataFrame(g_rows)
+
+        if "gainers_df" in st.session_state and not st.session_state["gainers_df"].empty:
+            df_g = st.session_state["gainers_df"].copy()
+            if g_rank == "% Thay Đổi":
+                df_g = df_g.sort_values("% Thay Đổi", ascending=False)
+            elif g_rank == "% Hồi từ Đáy":
+                df_g = df_g.sort_values("% Tăng từ Đáy", ascending=False)
+            else:
+                df_g["_score"] = df_g["% Tăng từ Đáy"] + df_g["% Giảm từ Đỉnh"]
+                df_g = df_g.sort_values("_score", ascending=False).drop(columns=["_score"])
+
+            df_g_show = df_g.head(g_top)
+            styled_g = (
+                df_g_show.style
+                .map(_color_signed, subset=["% Thay Đổi", "% Tăng từ Đáy", "% Giảm từ Đỉnh"])
+                .map(_color_purple, subset=["Biên Độ (H/L)"])
+                .format({
+                    "% Thay Đổi": "{:+.2f}%",
+                    "% Tăng từ Đáy": "{:+.2f}%",
+                    "% Giảm từ Đỉnh": "{:+.2f}%",
+                    "Biên Độ (H/L)": "{:.2f}%",
+                })
+            )
+            st.dataframe(styled_g, width="stretch", hide_index=True, height=520)
 
 
 # ==============================================================================
@@ -615,67 +1025,110 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
     t_eod, t_intra = st.tabs(["📉 Biểu Đồ Kỹ Thuật (EOD)", "⚡ Khớp Lệnh Trong Phiên & Bảng Giá SSI"])
 
     with t_eod:
-        c1, c2, c3, c4 = st.columns([1.5, 1.2, 1.2, 1.5])
+        c1, c2, c3, c4, c5 = st.columns([1.4, 1.1, 1.1, 1.1, 1.0], vertical_alignment="bottom")
         ind_sel = c1.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="hist_ind")
         sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
         sym_sel = c2.selectbox("Mã cổ phiếu", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
         h_start = c3.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="h_s")
         h_end = c4.date_input("Đến ngày", value=TODAY_VN, key="h_e")
+        h_tf = c5.selectbox("Khung", ["1 Ngày", "1 Tuần", "1 Tháng"])
 
-        ma_sel = st.multiselect("Đường trung bình (MA)", [10, 20, 50, 100, 200], default=[10, 20, 50])
-        show_ath = st.checkbox("Hiển thị Đỉnh lịch sử (ATH)", value=True)
+        o1, o2, o3, o4 = st.columns([2.2, 1.2, 1.2, 1.4], vertical_alignment="bottom")
+        ma_sel = o1.multiselect("Đường MA", [10, 20, 50, 100, 200], default=[10, 20, 50])
+        custom_ma_txt = o2.text_input("Custom MA", placeholder="vd: 5, 15")
+        show_ma_vol = o3.checkbox("MA20 Vol", value=True)
+        show_ath = o4.checkbox("Đỉnh LS (ATH) & Giá hiện tại", value=True)
 
-        df_hist = fetch_ssi_ohlcv(sym_sel, h_start - timedelta(days=365), h_end, "D")
+        active_mas = list(ma_sel)
+        if custom_ma_txt:
+            for part in re.split(r"[,;\s]+", custom_ma_txt):
+                if part.isdigit() and 1 < int(part) < 500:
+                    active_mas.append(int(part))
+        active_mas = sorted(list(set(active_mas)))
+
+        df_hist = fetch_ssi_ohlcv(sym_sel, h_start - timedelta(days=400), h_end, "D")
         if not df_hist.empty:
-            for p in ma_sel:
-                df_hist[f"MA{p}"] = df_hist["Close"].rolling(p).mean()
+            raw_ath = float(df_hist["High"].max())
+            logic = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+            if h_tf == "1 Tuần":
+                df_hist = df_hist.resample("W-FRI").apply(logic).dropna()
+            elif h_tf == "1 Tháng":
+                df_hist = df_hist.resample("ME").apply(logic).dropna()
+
+            for p in active_mas:
+                df_hist[f"MA{p}"] = df_hist["Close"].rolling(p, min_periods=1).mean()
+            df_hist["MA20_Vol"] = df_hist["Volume"].rolling(20, min_periods=1).mean()
             plot_df = df_hist[df_hist.index.date >= h_start]
 
-            fig_c = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
-            fig_c.add_trace(
-                go.Candlestick(
-                    x=plot_df.index, open=plot_df["Open"], high=plot_df["High"],
-                    low=plot_df["Low"], close=plot_df["Close"], name=sym_sel,
-                ),
-                row=1, col=1,
-            )
-            for p in ma_sel:
+            if not plot_df.empty:
+                fig_c = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.03)
                 fig_c.add_trace(
-                    go.Scatter(x=plot_df.index, y=plot_df[f"MA{p}"], name=f"MA{p}", line=dict(color=MA_COLORS.get(p, "#0284c7"), width=1.4)),
+                    go.Candlestick(
+                        x=plot_df.index, open=plot_df["Open"], high=plot_df["High"],
+                        low=plot_df["Low"], close=plot_df["Close"], name=sym_sel,
+                        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+                    ),
                     row=1, col=1,
                 )
-            if show_ath:
-                ath_val = float(df_hist["High"].max())
-                fig_c.add_hline(y=ath_val, line_dash="dash", line_color="#9333ea", annotation_text=f"ATH: {ath_val:,.2f}", row=1, col=1)
+                fallback_cols = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+                for idx_p, p in enumerate(active_mas):
+                    col_hex = MA_COLORS.get(p, fallback_cols[idx_p % len(fallback_cols)])
+                    fig_c.add_trace(
+                        go.Scatter(x=plot_df.index, y=plot_df[f"MA{p}"], name=f"MA{p}", line=dict(color=col_hex, width=1.4)),
+                        row=1, col=1,
+                    )
+                if show_ath:
+                    last_c = float(plot_df["Close"].iloc[-1])
+                    fig_c.add_hline(y=raw_ath, line_dash="dash", line_color="#9333ea", annotation_text=f"ATH: {raw_ath:,.2f}", row=1, col=1)
+                    fig_c.add_hline(y=last_c, line_dash="dot", line_color="#0284c7", annotation_text=f"Giá: {last_c:,.2f}", row=1, col=1)
 
-            vol_colors = ["#10b981" if c >= o else "#ef4444" for c, o in zip(plot_df["Close"], plot_df["Open"])]
-            fig_c.add_trace(go.Bar(x=plot_df.index, y=plot_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
-            fig_c.update_layout(height=620, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
-            st.plotly_chart(fig_c, width="stretch")
+                vol_colors = ["#10b981" if c >= o else "#ef4444" for c, o in zip(plot_df["Close"], plot_df["Open"])]
+                fig_c.add_trace(go.Bar(x=plot_df.index, y=plot_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
+                if show_ma_vol:
+                    fig_c.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA20_Vol"], name="MA20 Vol", line=dict(color="#d946ef", width=1.3)), row=2, col=1)
+
+                fig_c.update_layout(height=620, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
+                st.plotly_chart(fig_c, width="stretch")
 
     with t_intra:
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
+        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.1, 1.1], vertical_alignment="bottom")
         in_sym = c1.text_input("Nhập mã cổ phiếu", value="FPT").strip().upper()
         in_date = c2.date_input("Ngày khớp lệnh", value=TODAY_VN, key="in_date")
-        in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "60"], format_func=lambda x: f"{x} phút")
+        in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "30", "60"], format_func=lambda x: f"{x} phút")
+        c4.button("🔄 Cập nhật", type="primary", width="stretch", key="btn_intra_ref")
 
         if in_sym:
             ws_mgr.subscribe([in_sym])
             tick = ws_mgr.get_snapshot([in_sym]).get(in_sym)
             if tick:
-                st.success(f"⚡ **SSI Realtime ({in_sym})**: Giá khớp `{tick['last']:,.2f}` | Thay đổi `{tick['delta']:+.2f} ({tick['pct']:+.2f}%)` | Cập nhật lúc `{tick['time']}`")
+                st.success(
+                    f"⚡ **SSI Realtime ({in_sym})**: Giá khớp `{tick['last']:,.2f}` | "
+                    f"Thay đổi `{tick['delta']:+.2f} ({tick['pct']:+.2f}%)` | Cập nhật lúc `{tick['time']}`"
+                )
 
             df_in = fetch_ssi_ohlcv(in_sym, in_date, in_date, in_tf)
             if not df_in.empty:
-                col_tbl, col_ch = st.columns([1.2, 2.8])
+                col_tbl, col_ch = st.columns([1.3, 2.7])
                 with col_tbl:
-                    st.dataframe(df_in.iloc[::-1], height=480, width="stretch")
+                    df_disp = df_in.iloc[::-1].copy()
+                    df_disp.index = df_disp.index.strftime("%H:%M")
+                    st.dataframe(
+                        df_disp.style.format({"Open": "{:,.2f}", "High": "{:,.2f}", "Low": "{:,.2f}", "Close": "{:,.2f}", "Volume": "{:,.0f}"}),
+                        height=500, width="stretch",
+                    )
                 with col_ch:
-                    fig_in = go.Figure(data=[go.Candlestick(
-                        x=df_in.index, open=df_in["Open"], high=df_in["High"],
-                        low=df_in["Low"], close=df_in["Close"], name=in_sym,
-                    )])
-                    fig_in.update_layout(height=480, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
+                    fig_in = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
+                    fig_in.add_trace(
+                        go.Candlestick(
+                            x=df_in.index, open=df_in["Open"], high=df_in["High"],
+                            low=df_in["Low"], close=df_in["Close"], name=in_sym,
+                            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+                        ),
+                        row=1, col=1,
+                    )
+                    v_cols = ["#10b981" if c >= o else "#ef4444" for c, o in zip(df_in["Close"], df_in["Open"])]
+                    fig_in.add_trace(go.Bar(x=df_in.index, y=df_in["Volume"], marker_color=v_cols, name="Vol"), row=2, col=1)
+                    fig_in.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
                     st.plotly_chart(fig_in, width="stretch")
             else:
                 st.info("Chưa có dữ liệu khớp lệnh trong ngày đã chọn.")
@@ -691,121 +1144,200 @@ elif workspace == "💼 Danh Mục & Backtest":
     with t_port:
         port_file = Path("portfolio.json")
         if "portfolio_data" not in st.session_state:
-            if port_file.exists():
-                st.session_state["portfolio_data"] = json.loads(port_file.read_text(encoding="utf-8"))
-            else:
-                st.session_state["portfolio_data"] = []
+            st.session_state["portfolio_data"] = json.loads(port_file.read_text(encoding="utf-8")) if port_file.exists() else []
 
-        with st.expander("➕ Thêm vị thế mới vào danh mục", expanded=False):
-            ac1, ac2, ac3, ac4, ac5 = st.columns([1, 1.2, 1, 1, 1.5])
+        # Thanh công cụ Import/Export JSON + Tiền mặt (an toàn trên Streamlit Cloud)
+        pc1, pc2, pc3, pc4 = st.columns([1.8, 1.5, 1.2, 1.2], vertical_alignment="bottom")
+        cash_vnd = pc1.number_input("Tiền mặt khả dụng (VNĐ)", 0.0, 1e12, 0.0, step=10_000_000.0)
+        up_json = pc2.file_uploader("Nhập portfolio.json", type=["json"], label_visibility="collapsed")
+        if up_json is not None:
+            try:
+                loaded = json.loads(up_json.read().decode("utf-8"))
+                if isinstance(loaded, list):
+                    st.session_state["portfolio_data"] = loaded
+                    port_file.write_text(json.dumps(loaded, ensure_ascii=False, indent=2), encoding="utf-8")
+                    st.success("Đã nhập danh mục thành công!")
+            except Exception as e:
+                st.error(f"File JSON không hợp lệ: {e}")
+
+        port_json_bytes = json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2).encode("utf-8")
+        pc3.download_button("💾 Xuất JSON", data=port_json_bytes, file_name="portfolio.json", mime="application/json", width="stretch")
+        if pc4.button("🔄 Làm mới giá", type="primary", width="stretch"):
+            st.cache_data.clear()
+
+        with st.expander("➕ Thêm / Xóa vị thế danh mục", expanded=False):
+            ac1, ac2, ac3, ac4, ac5, ac6 = st.columns([0.9, 1.1, 1, 1, 1.4, 1], vertical_alignment="bottom")
             new_sym = ac1.text_input("Mã CP", placeholder="VD: FPT").strip().upper()
-            new_bdate = ac2.date_input("Ngày mua", value=TODAY_VN)
+            new_bdate = ac2.date_input("Ngày mua", value=TODAY_VN, key="port_bdate")
             new_bpx = ac3.number_input("Giá mua (nghìn)", 0.0, 1000.0, 0.0, step=0.1)
             new_qty = ac4.number_input("Khối lượng", 0, 10_000_000, 100, step=100)
             new_note = ac5.text_input("Ghi chú")
-            if st.button("💾 Lưu vị thế"):
+            if ac6.button("➕ Thêm", type="primary", width="stretch"):
                 if new_sym and new_qty > 0:
                     st.session_state["portfolio_data"].append({
-                        "symbol": new_sym,
-                        "buy_date": new_bdate.isoformat(),
-                        "buy_price": new_bpx,
-                        "qty": int(new_qty),
-                        "note": new_note,
+                        "symbol": new_sym, "buy_date": new_bdate.isoformat(),
+                        "buy_price": new_bpx, "qty": int(new_qty), "note": new_note,
                     })
                     port_file.write_text(json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2), encoding="utf-8")
                     st.rerun()
 
-        cash_vnd = st.number_input("Tiền mặt khả dụng (VNĐ)", 0.0, 1e12, 0.0, step=10_000_000.0)
-        holdings = st.session_state["portfolio_data"]
+            if st.session_state["portfolio_data"]:
+                del_opts = [f"#{i}: {h['symbol']} ({h['qty']:,} CP @ {h['buy_price']})" for i, h in enumerate(st.session_state["portfolio_data"])]
+                dc1, dc2 = st.columns([3, 1], vertical_alignment="bottom")
+                del_sel = dc1.selectbox("Chọn vị thế cần xóa", del_opts)
+                if dc2.button("🗑️ Xóa vị thế", width="stretch"):
+                    idx_del = int(del_sel.split(":")[0].replace("#", ""))
+                    st.session_state["portfolio_data"].pop(idx_del)
+                    port_file.write_text(json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2), encoding="utf-8")
+                    st.rerun()
 
+        holdings = st.session_state["portfolio_data"]
         if holdings:
             syms_p = list(set([h["symbol"] for h in holdings]))
             ws_mgr.subscribe(syms_p)
             live_p = ws_mgr.get_snapshot(syms_p)
-            hist_p = fetch_batch_ohlcv_ssi(syms_p, TODAY_VN - timedelta(days=300), TODAY_VN, "D")
+            hist_p = fetch_batch_ohlcv_ssi(syms_p, TODAY_VN - timedelta(days=400), TODAY_VN, "D")
 
             rows_p = []
-            tot_cost = tot_val = 0.0
+            tot_cost = tot_val = tot_today_pl = 0.0
             for h in holdings:
                 sym = h["symbol"]
                 bp = float(h["buy_price"])
                 qty = int(h["qty"])
                 df_h = hist_p.get(sym)
 
-                last_px = bp
-                ma20 = ma50 = None
+                last_px = prev_px = bp
+                ma20 = ma50 = ma150 = ma200 = None
+                days_held = 0
                 if df_h is not None and not df_h.empty:
                     last_px = float(df_h["Close"].iloc[-1])
-                    ma20 = float(df_h["Close"].rolling(20).mean().iloc[-1])
-                    ma50 = float(df_h["Close"].rolling(50).mean().iloc[-1])
+                    prev_px = float(df_h["Close"].iloc[-2]) if len(df_h) >= 2 else last_px
+                    ma20 = float(df_h["Close"].rolling(20).mean().iloc[-1]) if len(df_h) >= 20 else None
+                    ma50 = float(df_h["Close"].rolling(50).mean().iloc[-1]) if len(df_h) >= 50 else None
+                    ma150 = float(df_h["Close"].rolling(150).mean().iloc[-1]) if len(df_h) >= 150 else None
+                    ma200 = float(df_h["Close"].rolling(200).mean().iloc[-1]) if len(df_h) >= 200 else None
+                    try:
+                        bd = date.fromisoformat(h["buy_date"])
+                        days_held = int((df_h.index.date >= bd).sum())
+                    except Exception:
+                        days_held = 0
 
                 if sym in live_p and live_p[sym].get("last"):
                     last_px = float(live_p[sym]["last"])
 
                 pl_vnd = (last_px - bp) * qty * 1000.0
                 pl_pct = ((last_px / bp - 1.0) * 100.0) if bp > 0 else 0.0
+                today_pl = (last_px - prev_px) * qty * 1000.0
+                row_val = last_px * qty * 1000.0
                 tot_cost += bp * qty * 1000.0
-                tot_val += last_px * qty * 1000.0
+                tot_val += row_val
+                tot_today_pl += today_pl
 
-                reco = "NẮM GIỮ"
+                is_strong = bool(ma50 and ma150 and ma200 and (last_px > ma50 > ma150 > ma200))
                 if pl_pct <= -7.0:
-                    reco = "🛑 CẮT LỖ (Vi phạm -7%)"
+                    reco = "🛑 BÁN CẮT LỖ (-7%)"
+                elif pl_pct <= -5.0:
+                    reco = "⚠️ CẢNH BÁO (-5%)"
                 elif ma50 and last_px < ma50:
-                    reco = "⚠️ GÃY MA50 - HẠ TỶ TRỌNG"
+                    reco = "BÁN/HẠ TỶ TRỌNG (Gãy MA50)"
                 elif pl_pct >= 25.0:
                     reco = "💰 CHỐT LỜI (>25%)"
-                elif ma20 and last_px < ma20 and pl_pct > 0:
-                    reco = "🔒 KHÓA LÃI (<MA20)"
+                elif pl_pct >= 20.0:
+                    reco = "💎 POWER PLAY (Giữ 8 tuần)" if days_held < 15 else "CÂN NHẮC CHỐT LỜI (20-25%)"
+                elif ma20 and last_px < ma20:
+                    reco = "BÁN KHÓA LÃI (<MA20)" if pl_pct > 0 else "QUAN SÁT (<MA20)"
+                elif 2.0 <= pl_pct <= 5.0 and is_strong:
+                    reco = "➕ MUA THÊM (Xác nhận Trend)"
+                elif is_strong:
+                    reco = "NẮM GIỮ (Trend mạnh)"
+                else:
+                    reco = "NẮM GIỮ (Theo dõi)"
 
                 rows_p.append({
                     "Mã": sym, "Ngày mua": h["buy_date"], "Giá mua": bp, "KL": qty,
-                    "Giá hiện tại": round(last_px, 2), "Lãi/Lỗ (VNĐ)": round(pl_vnd, 0),
-                    "% Lãi/Lỗ": round(pl_pct, 2), "Khuyến nghị tự động": reco, "Ghi chú": h.get("note", ""),
+                    "Số phiên": days_held, "Giá hiện tại": round(last_px, 2),
+                    "Lãi/Lỗ (VNĐ)": round(pl_vnd, 0), "% Lãi/Lỗ": round(pl_pct, 2),
+                    "Hôm nay (VNĐ)": round(today_pl, 0), "_val": row_val,
+                    "Khuyến nghị tự động": reco, "Ghi chú": h.get("note", ""),
                 })
 
             nav_all = tot_val + cash_vnd
-            tot_pl = tot_val - tot_cost
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Tổng Lãi / Lỗ", f"{tot_pl:,.0f} VNĐ", f"{(tot_pl / tot_cost * 100) if tot_cost > 0 else 0:+.2f}%")
-            k2.metric("Giá trị Cổ phiếu", f"{tot_val:,.0f} VNĐ")
-            k3.metric("Tổng NAV (Gồm tiền mặt)", f"{nav_all:,.0f} VNĐ")
+            denom = nav_all if nav_all > 0 else 1.0
+            for rp in rows_p:
+                rp["Tỷ trọng (%)"] = round(rp.pop("_val") / denom * 100.0, 2)
 
-            st.dataframe(pd.DataFrame(rows_p), width="stretch", hide_index=True)
+            tot_pl = tot_val - tot_cost
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Tổng Lãi / Lỗ", f"{tot_pl:,.0f} đ", f"{(tot_pl / tot_cost * 100) if tot_cost > 0 else 0:+.2f}%")
+            k2.metric("Biến Động Hôm Nay", f"{tot_today_pl:+,.0f} đ")
+            k3.metric("Giá Trị Cổ Phiếu", f"{tot_val:,.0f} đ")
+            k4.metric("Tổng NAV (Gồm Tiền Mặt)", f"{nav_all:,.0f} đ")
+
+            df_p = pd.DataFrame(rows_p)[
+                ["Mã", "Ngày mua", "Giá mua", "KL", "Số phiên", "Giá hiện tại", "Lãi/Lỗ (VNĐ)", "% Lãi/Lỗ", "Hôm nay (VNĐ)", "Tỷ trọng (%)", "Khuyến nghị tự động", "Ghi chú"]
+            ]
+            styled_p = (
+                df_p.style
+                .map(_color_signed, subset=["Lãi/Lỗ (VNĐ)", "% Lãi/Lỗ", "Hôm nay (VNĐ)"])
+                .map(_color_status, subset=["Khuyến nghị tự động"])
+                .format({
+                    "Giá mua": "{:,.2f}", "KL": "{:,.0f}", "Giá hiện tại": "{:,.2f}",
+                    "Lãi/Lỗ (VNĐ)": "{:+,.0f}", "% Lãi/Lỗ": "{:+.2f}%",
+                    "Hôm nay (VNĐ)": "{:+,.0f}", "Tỷ trọng (%)": "{:.2f}%",
+                })
+            )
+            st.dataframe(styled_p, width="stretch", hide_index=True)
         else:
-            st.info("Danh mục đang trống. Nhấn '➕ Thêm vị thế mới' ở trên để bắt đầu theo dõi.")
+            st.info("Danh mục đang trống. Nhấn '➕ Thêm / Xóa vị thế danh mục' hoặc nhập file `portfolio.json`.")
 
     # --- SUB-TAB 5.2: BACKTEST HYBRID ---
     with t_bt:
-        col_cfg, col_res = st.columns([1.1, 2.9])
+        col_cfg, col_res = st.columns([1.15, 2.85])
         with col_cfg:
-            st.markdown("#### ⚙️ Tham Số Kiểm Thử")
-            bt_ind = st.selectbox("Vũ trụ cổ phiếu", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"], key="bt_ind")
-            bt_cap = st.number_input("Vốn ban đầu (VNĐ)", 10_000_000.0, 1e12, 1_000_000_000.0, step=100_000_000.0)
-            bt_start = st.date_input("Từ ngày", value=date(2024, 10, 17), key="bt_s")
-            bt_end = st.date_input("Đến ngày", value=TODAY_VN, key="bt_e")
+            with st.expander("💼 1. Vốn & Quản Trị Danh Mục", expanded=True):
+                bt_ind = st.selectbox("Vũ trụ cổ phiếu", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"], key="bt_ind")
+                bt_cap = st.number_input("Vốn ban đầu (VNĐ)", 10_000_000.0, 1e12, 1_000_000_000.0, step=100_000_000.0)
+                d1, d2 = st.columns(2)
+                bt_start = d1.date_input("Từ ngày", value=date(2024, 10, 17), key="bt_s")
+                bt_end = d2.date_input("Đến ngày", value=TODAY_VN, key="bt_e")
 
-            c_a, c_b = st.columns(2)
-            bt_max_pos = c_a.number_input("Số mã max", 1, 20, 5)
-            bt_max_sec = c_b.number_input("Max/Ngành", 1, 10, 2)
-            bt_sl = c_a.number_input("Cắt lỗ (%)", 1.0, 30.0, 7.0, step=0.5)
-            bt_ma_exit = c_b.number_input("MA chặn", 5, 200, 20)
-            bt_fee = c_a.number_input("Phí+Thuế (%)", 0.0, 5.0, 0.15, step=0.05)
-            bt_tplus = c_b.number_input("Chu kỳ T+", 0.0, 5.0, 2.5, step=0.5)
+                c_a, c_b = st.columns(2)
+                bt_max_pos = c_a.number_input("Số mã max", 1, 20, 5)
+                bt_max_sec = c_b.number_input("Max/Ngành", 1, 10, 2)
+                bt_sl = c_a.number_input("Cắt lỗ (%)", 1.0, 30.0, 7.0, step=0.5)
+                bt_ma_exit = c_b.number_input("MA chặn", 5, 200, 20)
+                bt_fee = c_a.number_input("Phí+Thuế (%)", 0.0, 5.0, 0.15, step=0.05)
+                bt_tplus = c_b.number_input("Chu kỳ T+", 0.0, 5.0, 2.5, step=0.5)
 
-            bt_mode = st.selectbox(
-                "Chế độ điểm mua",
-                [0, 1, 2],
-                index=1,
-                format_func=lambda x: ["1. Chuẩn VCP Pivot (2T-4T)", "2. VCP hoặc Breakout 20P", "3. Mọi mã Stage 2 + Nổ Vol"][x],
-            )
-            bt_rs = st.number_input("RS Min", 50, 99, 70, key="bt_rs")
-            bt_vol_mult = st.number_input("Hệ số Vol", 0.5, 5.0, 1.2, step=0.1)
-            bt_min_vol = st.number_input("Min Volume", 0, 10_000_000, 1_000_000, step=100_000)
+            with st.expander("🎯 2. Điểm Mua Minervini & VCP", expanded=True):
+                bt_mode = st.selectbox(
+                    "Chế độ điểm mua", [0, 1, 2], index=1,
+                    format_func=lambda x: ["1. Chuẩn VCP Pivot (2T-4T)", "2. VCP hoặc Breakout 20P", "3. Mọi mã Stage 2 + Nổ Vol"][x],
+                )
+                m1, m2 = st.columns(2)
+                bt_rs = m1.number_input("RS Min", 50, 99, 70, key="bt_rs")
+                bt_pivot = m2.number_input("Biên Pivot (%)", 1.0, 15.0, 5.0, step=0.5)
+                bt_vol_mult = m1.number_input("Hệ số Vol", 0.5, 5.0, 1.2, step=0.1)
+                bt_min_vol = m2.number_input("Min Vol", 0, 10_000_000, 1_000_000, step=100_000)
 
-            bt_pp = st.checkbox("Power Play (Giữ MA50 khi lãi ≥ 20%)", value=True)
-            bt_dd_shield = st.checkbox("Lá chắn Ngày Phân Phối", value=True)
-            bt_climax = st.checkbox("Bán Đỉnh Hưng Phấn (>80% MA200)", value=True)
-            bt_bot_fish = st.checkbox("Bắt Đáy Hoảng Loạn (Downtrend)", value=True)
+                bt_fsec = st.checkbox("Chỉ mua Top ngành", value=False)
+                bt_top_sec = st.number_input("Số ngành Top", 1, 20, 5, disabled=not bt_fsec)
+                bt_use_tp = st.checkbox("Chốt lời chủ động", value=False)
+                bt_tp = st.number_input("Mức chốt lời (%)", 5.0, 200.0, 25.0, step=1.0, disabled=not bt_use_tp)
+                bt_pp = st.checkbox("Power Play (Giữ MA50 khi lãi ≥ 20%)", value=True)
+
+            with st.expander("🛡️ 3. Lá Chắn Phân Phối & Đỉnh/Đáy", expanded=False):
+                bt_dd_shield = st.checkbox("Bật Lá chắn Phân phối", value=True)
+                s1, s2 = st.columns(2)
+                bt_wdd = s1.number_input("Trọng số PP", 0.1, 5.0, 1.0, step=0.1)
+                bt_wstall = s2.number_input("Stalling", 0.1, 5.0, 0.7, step=0.1)
+                bt_dd_cancel = st.number_input("Xóa DD khi hồi (%)", 1.0, 20.0, 5.0, step=0.5)
+                bt_climax = st.checkbox("Bán Đỉnh Hưng Phấn", value=True)
+                bt_climax_th = st.number_input("Ngưỡng >MA200 (%)", 50.0, 99.0, 80.0, disabled=not bt_climax)
+                bt_bot_fish = st.checkbox("Bắt Đáy Hoảng Loạn", value=True)
+                p1, p2 = st.columns(2)
+                bt_p200 = p1.number_input("MA200 < (%)", 5.0, 40.0, 20.0, disabled=not bt_bot_fish)
+                bt_p52 = p2.number_input("Đáy 52T > (%)", 10.0, 90.0, 70.0, disabled=not bt_bot_fish)
 
             run_bt_btn = st.button("🚀 CHẠY BACKTEST HYBRID", type="primary", width="stretch")
 
@@ -829,37 +1361,76 @@ elif workspace == "💼 Danh Mục & Backtest":
                     "stop_loss": bt_sl / 100.0, "ma_exit": int(bt_ma_exit),
                     "start_date": bt_start, "end_date": bt_end,
                     "entry_mode": int(bt_mode), "min_rs": int(bt_rs),
-                    "max_pivot_pct": 5.0, "vol_mult": float(bt_vol_mult),
-                    "min_vol": int(bt_min_vol), "use_take_profit": False,
-                    "take_profit": 0.25, "use_power_play": bt_pp,
-                    "use_dd_shield": bt_dd_shield, "w_dd": 1.0, "w_stall": 0.7,
-                    "dd_cancel_pct": 5.0, "t_low": 3, "t_med": 5, "t_high": 7, "t_crit": 9,
-                    "use_top_climax": bt_climax, "climax_breadth_thresh": 80.0,
-                    "use_bottom_fishing": bt_bot_fish, "panic_ma200_thresh": 20.0, "panic_bot52_thresh": 70.0,
+                    "max_pivot_pct": float(bt_pivot), "vol_mult": float(bt_vol_mult),
+                    "min_vol": int(bt_min_vol), "filter_top_sectors": bt_fsec,
+                    "top_sectors": int(bt_top_sec), "use_take_profit": bt_use_tp,
+                    "take_profit": bt_tp / 100.0, "use_power_play": bt_pp,
+                    "use_dd_shield": bt_dd_shield, "w_dd": float(bt_wdd), "w_stall": float(bt_wstall),
+                    "dd_cancel_pct": float(bt_dd_cancel), "t_low": 3, "t_med": 5, "t_high": 7, "t_crit": 9,
+                    "use_top_climax": bt_climax, "climax_breadth_thresh": float(bt_climax_th),
+                    "use_bottom_fishing": bt_bot_fish, "panic_ma200_thresh": float(bt_p200), "panic_bot52_thresh": float(bt_p52),
                 }
-                st.session_state["bt_result"] = run_hybrid_backtest(raw_bt, params)
+                with st.spinner("Đang chạy mô phỏng chiến lược Hybrid..."):
+                    st.session_state["bt_result"] = run_hybrid_backtest(raw_bt, params)
 
             if "bt_result" in st.session_state and st.session_state["bt_result"]:
                 res = st.session_state["bt_result"]
                 s = res["stats"]
                 eq = res["equity"]
 
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Lãi / Lỗ Ròng", f"{s['Profit']:,.0f} đ", f"{s['Profit %']:+.2f}%")
-                m2.metric("CAGR / Năm", f"{s['CAGR']:+.2f}%")
-                m3.metric("Tỷ Lệ Thắng", f"{s['Win Rate']:.1f}%", f"{s['Total Trades']} lệnh")
-                m4.metric("Tài Sản Cuối", f"{s['Final']:,.0f} đ")
-                m5.metric("Max Drawdown", f"{s['Max DD']:.2f}%")
+                m1, m2, m3, m4, m5, m6 = st.columns(6)
+                m1.metric("Lãi / Lỗ Ròng", f"{s['Profit'] / 1e6:+,.1f} Tr")
+                m2.metric("% Tổng Lãi", f"{s['Profit %']:+.2f}%")
+                m3.metric("CAGR / Năm", f"{s['CAGR']:+.2f}%")
+                m4.metric("Tỷ Lệ Thắng", f"{s['Win Rate']:.1f}%", f"{s['Total Trades']} lệnh")
+                m5.metric("Tài Sản Cuối", f"{s['Final'] / 1e9:,.2f} Tỷ")
+                m6.metric("Max Drawdown", f"{s['Max DD']:.2f}%")
 
-                fig_eq = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["NAV"], name="Tổng NAV", line=dict(color="#0284c7", width=2)), row=1, col=1)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Exposure"], name="% Tỷ trọng CP", fill="tozeroy", line=dict(color="#10b981", width=1)), row=2, col=1)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Breadth200"], name="% Mã > MA200", line=dict(color="#f59e0b", dash="dash")), row=2, col=1)
-                fig_eq.update_layout(height=460, margin=dict(l=10, r=10, t=25, b=10))
+                peak_nav = eq["NAV"].cummax()
+                fig_eq = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.68, 0.32], vertical_spacing=0.05)
+                fig_eq.add_trace(go.Scatter(x=eq.index, y=peak_nav, name="Đỉnh NAV", line=dict(color="rgba(239,68,68,0.2)", width=0.5), showlegend=False), row=1, col=1)
+                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["NAV"], name="Tổng NAV", fill="tonexty", fillcolor="rgba(239,68,68,0.12)", line=dict(color="#0284c7", width=2.2)), row=1, col=1)
+                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Exposure"], name="% Tỷ trọng CP", fill="tozeroy", fillcolor="rgba(16,185,129,0.22)", line=dict(color="#10b981", width=1.2)), row=2, col=1)
+                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Breadth200"], name="% > MA200", line=dict(color="#f59e0b", dash="dash", width=1.4)), row=2, col=1)
+
+                panic_df = eq[eq["IsPanic"]]
+                if not panic_df.empty:
+                    fig_eq.add_trace(go.Scatter(x=panic_df.index, y=[10] * len(panic_df), mode="markers", name="Đáy Hoảng Loạn", marker=dict(color="#ef4444", size=6)), row=2, col=1)
+                climax_df = eq[eq["IsClimax"]]
+                if not climax_df.empty:
+                    fig_eq.add_trace(go.Scatter(x=climax_df.index, y=[90] * len(climax_df), mode="markers", name="Đỉnh Hưng Phấn", marker=dict(color="#8b5cf6", size=6)), row=2, col=1)
+
+                fig_eq.update_layout(height=470, margin=dict(l=10, r=10, t=25, b=10))
                 st.plotly_chart(fig_eq, width="stretch")
 
-                sub_t1, sub_t2 = st.tabs(["📝 Sổ Lệnh Chi Tiết", "✅ Deal Đã Đóng"])
+                sub_t1, sub_t2, sub_t3 = st.tabs(["📝 Sổ Lệnh Chi Tiết", "✅ Deal Đã Đóng", "📊 Lịch Sử Tài Sản"])
                 with sub_t1:
-                    st.dataframe(res["trades"].iloc[::-1] if not res["trades"].empty else pd.DataFrame(), width="stretch", hide_index=True)
+                    df_tr = res["trades"].iloc[::-1] if not res["trades"].empty else pd.DataFrame()
+                    if not df_tr.empty:
+                        st.dataframe(
+                            df_tr.style
+                            .map(_color_status, subset=["Lệnh"])
+                            .map(_color_signed, subset=["Lãi/Lỗ"])
+                            .format({"Giá": "{:,.2f}", "KL": "{:,.0f}", "Lãi/Lỗ": "{:+,.0f}"}),
+                            width="stretch", hide_index=True, height=360,
+                        )
                 with sub_t2:
-                    st.dataframe(res["closed"].iloc[::-1] if not res["closed"].empty else pd.DataFrame(), width="stretch", hide_index=True)
+                    df_cl = res["closed"].iloc[::-1] if not res["closed"].empty else pd.DataFrame()
+                    if not df_cl.empty:
+                        st.dataframe(
+                            df_cl.style
+                            .map(_color_signed, subset=["Lãi/Lỗ", "% Lãi/Lỗ"])
+                            .format({"Giá Mua": "{:,.2f}", "Giá Bán": "{:,.2f}", "KL": "{:,.0f}", "Lãi/Lỗ": "{:+,.0f}", "% Lãi/Lỗ": "{:+.2f}%"}),
+                            width="stretch", hide_index=True, height=360,
+                        )
+                with sub_t3:
+                    df_sn = res["snapshots"].iloc[::-1] if not res["snapshots"].empty else pd.DataFrame()
+                    if not df_sn.empty:
+                        st.dataframe(
+                            df_sn.style.format({
+                                "Tổng NAV": "{:,.0f}", "Tiền Mặt": "{:,.0f}",
+                                "Tiền Chờ Về": "{:,.0f}", "Giá Trị CP": "{:,.0f}",
+                                "Risk Score": "{:.1f}", "% > MA200": "{:.1f}%",
+                            }),
+                            width="stretch", hide_index=True, height=360,
+                        )
