@@ -5,6 +5,7 @@ import json
 import re
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -30,8 +31,9 @@ from core.quant_engine import (
     run_minervini_screener,
 )
 from core.ssi_client import (
+    clear_batch_cache,
     fetch_batch_ohlcv_ssi,
-    fetch_ssi_ohlcv,
+    fetch_ssi_ohlcv_cached,
     fetch_ssi_stock_list,
     get_ssi_ws_manager,
     vn_now,
@@ -50,7 +52,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Nền tổng thể & căn lề chuẩn không bị thanh Cloud đè chữ */
     .stApp {
         background-color: #f1f5f9;
     }
@@ -60,7 +61,7 @@ st.markdown("""
         max-width: 98.5% !important;
     }
 
-    /* Thanh Header V11 Pro tràn 100% chiều ngang */
+    /* Thanh Header V11 Pro */
     .v11-header {
         background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
         padding: 12px 20px;
@@ -103,7 +104,7 @@ st.markdown("""
         border: 1px solid rgba(239, 68, 68, 0.45);
     }
 
-    /* Tinh chỉnh nút bấm hiện đại */
+    /* Nút bấm phẳng */
     button[kind="primary"] {
         background-color: #0284c7 !important;
         border-color: #0284c7 !important;
@@ -134,22 +135,22 @@ st.markdown("""
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-left: 4px solid #0284c7;
-        padding: 12px 16px;
+        padding: 10px 14px;
         border-radius: 10px;
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
     }
     div[data-testid="stMetricLabel"] p {
-        font-size: 12.5px !important;
+        font-size: 12px !important;
         font-weight: 700 !important;
         color: #64748b !important;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 22px !important;
+        font-size: 20px !important;
         font-weight: 800 !important;
         color: #0f172a !important;
     }
 
-    /* Sub-tabs thanh thoát */
+    /* Sub-tabs */
     div[data-testid="stTabs"] button[data-baseweb="tab"] {
         font-weight: 700 !important;
         font-size: 14px !important;
@@ -157,7 +158,7 @@ st.markdown("""
         border-radius: 8px 8px 0 0 !important;
     }
 
-    /* Khung bảng dữ liệu bo tròn */
+    /* Bảng dữ liệu */
     div[data-testid="stDataFrame"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
@@ -165,7 +166,7 @@ st.markdown("""
         padding: 4px;
     }
 
-    /* Thanh chú thích 7 màu bản đồ nhiệt */
+    /* Chú thích 7 màu Treemap */
     .tm-legend-bar {
         display: flex;
         flex-wrap: wrap;
@@ -187,11 +188,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 # ==============================================================================
-# 2. HELPER MÀU SẮC & BIỂU ĐỒ CHUẨN CHỨNG KHOÁN VN
+# 2. HELPER BIỂU ĐỒ, LỌC NGÀY/GIỜ NGHỈ, LIVE CANDLE & MÀU SẮC
 # ==============================================================================
+ALL_MAIN_INDICES = ["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"]
+
+
 def get_vn_treemap_color(pct: float) -> str:
-    """7 mức màu tách biệt chuẩn bảng giá chứng khoán VN (khớp tab_overview.py)."""
     if pct >= 6.5:
         return "#9333ea"   # Tím trần
     if pct >= 2.0:
@@ -199,7 +203,7 @@ def get_vn_treemap_color(pct: float) -> str:
     if pct > 0.0:
         return "#10b981"   # Xanh lá tươi
     if pct == 0.0:
-        return "#d97706"   # Vàng tham chiếu (đủ độ tương phản cho chữ trắng)
+        return "#d97706"   # Vàng tham chiếu
     if pct <= -6.5:
         return "#0284c7"   # Xanh lơ sàn
     if pct <= -2.0:
@@ -208,12 +212,6 @@ def get_vn_treemap_color(pct: float) -> str:
 
 
 def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
-    """
-    Xây dựng Treemap dùng go.Treemap:
-    - Hiển thị chính xác 100% Mã + % thay đổi (tuyệt đối không còn +NaN%).
-    - Dùng 7 màu chứng khoán VN tách biệt, khung ngành màu xám đậm sang trọng.
-    - Hover tooltip đầy đủ tiếng Việt cho từng cổ phiếu và từng ngành.
-    """
     ids, labels, parents, values, colors, texts, hovers = [], [], [], [], [], [], []
 
     total_gtgd = float(df_tm["GTGD (Tỷ)"].sum())
@@ -222,7 +220,6 @@ def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
         if total_gtgd > 0 else 0.0
     )
 
-    # Nút gốc HOSE (value = 0 theo chuẩn branchvalues="remainder")
     ids.append("HOSE")
     labels.append("HOSE")
     parents.append("")
@@ -236,7 +233,6 @@ def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
         f"Số mã khớp lệnh: {len(df_tm)}"
     )
 
-    # Nhóm theo ngành
     for ind, gdf in df_tm.groupby("Ngành"):
         sec_gtgd = float(gdf["GTGD (Tỷ)"].sum())
         if sec_gtgd <= 0:
@@ -257,11 +253,11 @@ def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
             f"Số mã: {len(gdf)}"
         )
 
-        for row in gdf.itertuples():
-            sym = str(row.Mã)
-            pct = float(row._4)     # cột '% Thay đổi'
-            gtgd = float(row._3)    # cột 'GTGD (Tỷ)'
-            px_val = float(row.Giá)
+        for row in gdf.to_dict("records"):
+            sym = str(row["Mã"])
+            pct = float(row["% Thay đổi"])
+            gtgd = float(row["GTGD (Tỷ)"])
+            px_val = float(row["Giá"])
 
             ids.append(f"{sec_id}_{sym}")
             labels.append(sym)
@@ -297,15 +293,45 @@ def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
             tiling=dict(packing="squarify", pad=3),
         )
     )
-    fig.update_layout(
-        height=700,
-        margin=dict(l=4, r=4, t=6, b=4),
-        paper_bgcolor="#ffffff",
-    )
+    fig.update_layout(height=700, margin=dict(l=4, r=4, t=6, b=4), paper_bgcolor="#ffffff")
     return fig
 
 
-def _style_chart(fig: go.Figure, height: int = 500) -> go.Figure:
+def _filter_vn_trading_hours(df: pd.DataFrame) -> pd.DataFrame:
+    """Loại bỏ các khung giờ ngoài phiên giao dịch VN (nghỉ trưa 11:31-12:59, trước 09:00, sau 15:05)."""
+    if df.empty:
+        return df
+    hhmm = df.index.hour * 100 + df.index.minute
+    mask = ((hhmm >= 900) & (hhmm <= 1130)) | ((hhmm >= 1300) & (hhmm <= 1505))
+    filtered = df[mask]
+    return filtered if not filtered.empty else df
+
+
+def _trading_x_labels(index: pd.DatetimeIndex, is_intraday: bool = False) -> list[str]:
+    """Chuyển trục thời gian thành nhãn rời rạc để Plotly loại bỏ hoàn toàn ngày nghỉ lễ, T7/CN và giờ nghỉ trưa."""
+    if is_intraday:
+        fmt = "%H:%M" if len(set(index.date)) <= 1 else "%d/%m %H:%M"
+    else:
+        fmt = "%d/%m/%y"
+    return index.strftime(fmt).tolist()
+
+
+def _patch_live_candle(df: pd.DataFrame, tick: Optional[dict], is_intraday: bool = False) -> pd.DataFrame:
+    """Cập nhật nến cuối cùng bằng giá khớp lệnh Realtime từ SSI WebSocket."""
+    if df.empty or not tick or not tick.get("last"):
+        return df
+    out = df.copy()
+    live_px = float(tick["last"])
+    last_idx = out.index[-1]
+    out.loc[last_idx, "Close"] = live_px
+    out.loc[last_idx, "High"] = max(float(out.loc[last_idx, "High"]), live_px)
+    out.loc[last_idx, "Low"] = min(float(out.loc[last_idx, "Low"]), live_px)
+    if not is_intraday and tick.get("volume"):
+        out.loc[last_idx, "Volume"] = max(float(out.loc[last_idx, "Volume"]), float(tick["volume"]))
+    return out
+
+
+def _style_chart(fig: go.Figure, height: int = 500, categorical_x: bool = False) -> go.Figure:
     fig.update_layout(
         template="plotly_white",
         height=height,
@@ -316,7 +342,10 @@ def _style_chart(fig: go.Figure, height: int = 500) -> go.Figure:
         font=dict(family="Segoe UI, Arial, sans-serif", size=12, color="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#f1f5f9", zeroline=False)
+    if categorical_x:
+        fig.update_xaxes(type="category", nticks=12, tickangle=0, showgrid=True, gridcolor="#f1f5f9", zeroline=False)
+    else:
+        fig.update_xaxes(showgrid=True, gridcolor="#f1f5f9", zeroline=False)
     fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0", zeroline=False)
     return fig
 
@@ -387,7 +416,7 @@ def _color_vol_score(val):
 
 
 # ==============================================================================
-# 3. KHỞI TẠO SSI WEBSOCKET, HEADER & THANH 5 WORKSPACE PHẲNG (KHÔNG CHẤM TRÒN)
+# 3. KHỞI TẠO SSI WEBSOCKET, HEADER & THANH 5 WORKSPACE PHẲNG
 # ==============================================================================
 ws_mgr = get_ssi_ws_manager()
 ssi_stocks_meta = fetch_ssi_stock_list("hose")
@@ -421,7 +450,7 @@ WORKSPACES = [
 if "active_ws" not in st.session_state:
     st.session_state["active_ws"] = WORKSPACES[0]
 
-nav_cols = st.columns(5, gap="small")
+nav_cols = st.columns([1, 1, 1, 1, 1, 0.95], gap="small", vertical_alignment="center")
 for idx, ws_name in enumerate(WORKSPACES):
     is_active = st.session_state["active_ws"] == ws_name
     if nav_cols[idx].button(
@@ -432,6 +461,9 @@ for idx, ws_name in enumerate(WORKSPACES):
     ):
         st.session_state["active_ws"] = ws_name
         st.rerun()
+
+with nav_cols[5]:
+    LIVE_AUTO = st.toggle("⚡ Live WS (5s)", value=True, key="global_live_toggle")
 
 workspace = st.session_state["active_ws"]
 
@@ -446,88 +478,117 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         "🩺 Sức Khỏe & Ngày Phân Phối",
     ])
 
-    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP ---
+    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP (6 CHỈ SỐ + LIVE 5S) ---
     with t1:
-        c1, c2, c3, _ = st.columns([1.1, 2.2, 1.3, 1.4], vertical_alignment="bottom")
+        c1, c2, c3 = st.columns([1.1, 3.6, 1.2], vertical_alignment="bottom")
         idx_date = c1.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
         selected_indices = c2.multiselect(
             "Chọn chỉ số hiển thị",
-            ["VNINDEX", "VN30", "HNX", "UPCOM"],
-            default=["VNINDEX", "VN30", "HNX", "UPCOM"],
+            ALL_MAIN_INDICES,
+            default=ALL_MAIN_INDICES,
         )
-        if c3.button("🔄 Làm mới dữ liệu", type="primary", width="stretch"):
+        if c3.button("🔄 Làm mới ngay", type="primary", width="stretch"):
             ws_mgr.subscribe(selected_indices)
             st.cache_data.clear()
 
-        if selected_indices:
+        def _render_indices_live_body():
+            if not selected_indices:
+                st.info("Vui lòng chọn ít nhất một chỉ số.")
+                return
+
             ws_mgr.subscribe(selected_indices)
             live_ticks = ws_mgr.get_snapshot(selected_indices)
 
-            cols_kpi = st.columns(len(selected_indices))
+            n_sel = len(selected_indices)
+            cols_kpi = st.columns(min(n_sel, 6))
+            n_cols = 1 if n_sel == 1 else 2
+            n_rows = int(np.ceil(n_sel / n_cols))
+
             fig_idx = make_subplots(
-                rows=2, cols=2,
-                subplot_titles=selected_indices[:4],
-                vertical_spacing=0.14, horizontal_spacing=0.07,
+                rows=n_rows, cols=n_cols,
+                subplot_titles=selected_indices,
+                vertical_spacing=0.11, horizontal_spacing=0.06,
             )
 
-            for i, sym in enumerate(selected_indices[:4]):
-                df_1m = fetch_ssi_ohlcv(sym, idx_date - timedelta(days=6), idx_date, "1")
-                df_d = fetch_ssi_ohlcv(sym, idx_date - timedelta(days=15), idx_date, "D")
+            for i, sym in enumerate(selected_indices):
+                df_1m = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=6), idx_date, "1")
+                df_d = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=25), idx_date, "D")
 
                 last_px = delta = pct = vol = 0.0
                 trade_date_str = idx_date.strftime("%d/%m")
                 prev_close = None
+                plot_series = pd.DataFrame()
+                is_intraday_mode = True
 
                 if not df_1m.empty:
                     df_1m = df_1m[df_1m.index.date <= idx_date]
                     if not df_1m.empty:
                         actual_trade_date = df_1m.index[-1].date()
                         trade_date_str = actual_trade_date.strftime("%d/%m")
-                        df_day = df_1m[df_1m.index.date == actual_trade_date]
-
+                        plot_series = _filter_vn_trading_hours(df_1m[df_1m.index.date == actual_trade_date])
                         if not df_d.empty:
                             df_prev = df_d[df_d.index.date < actual_trade_date]
                             if not df_prev.empty:
                                 prev_close = float(df_prev["Close"].iloc[-1])
 
-                        last_px = float(df_day["Close"].iloc[-1])
-                        vol = float(df_day["Volume"].sum())
+                # Fallback biểu đồ 30 phiên gần nhất nếu chỉ số không có nến 1 phút (VNMID / VNSMALL)
+                if plot_series.empty and not df_d.empty:
+                    df_d_cut = df_d[df_d.index.date <= idx_date]
+                    if not df_d_cut.empty:
+                        is_intraday_mode = False
+                        plot_series = df_d_cut.tail(30)
+                        trade_date_str = df_d_cut.index[-1].strftime("%d/%m")
+                        if len(df_d_cut) >= 2:
+                            prev_close = float(df_d_cut["Close"].iloc[-2])
 
-                        if actual_trade_date == TODAY_VN and sym in live_ticks and live_ticks[sym].get("last"):
-                            last_px = float(live_ticks[sym]["last"])
-                            if live_ticks[sym].get("volume"):
-                                vol = float(live_ticks[sym]["volume"])
+                if not plot_series.empty:
+                    if idx_date == TODAY_VN and sym in live_ticks:
+                        plot_series = _patch_live_candle(plot_series, live_ticks[sym], is_intraday=is_intraday_mode)
+                    last_px = float(plot_series["Close"].iloc[-1])
+                    vol = float(plot_series["Volume"].sum()) if is_intraday_mode else float(plot_series["Volume"].iloc[-1])
+                    if idx_date == TODAY_VN and sym in live_ticks and live_ticks[sym].get("volume"):
+                        vol = float(live_ticks[sym]["volume"])
+                    if prev_close and prev_close > 0:
+                        delta = last_px - prev_close
+                        pct = (delta / prev_close) * 100.0
 
-                        if prev_close and prev_close > 0:
-                            delta = last_px - prev_close
-                            pct = (delta / prev_close) * 100.0
+                    r_idx = (i // n_cols) + 1
+                    c_idx = (i % n_cols) + 1
+                    line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#d97706")
+                    x_lbls = _trading_x_labels(plot_series.index, is_intraday=is_intraday_mode)
 
-                        r_idx, c_idx = (i // 2) + 1, (i % 2) + 1
-                        line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#d97706")
-                        fig_idx.add_trace(
-                            go.Scatter(
-                                x=df_day.index, y=df_day["Close"],
-                                mode="lines", name=sym,
-                                line=dict(color=line_col, width=2),
-                            ),
-                            row=r_idx, col=c_idx,
+                    fig_idx.add_trace(
+                        go.Scatter(
+                            x=x_lbls, y=plot_series["Close"],
+                            mode="lines", name=sym, line=dict(color=line_col, width=2),
+                        ),
+                        row=r_idx, col=c_idx,
+                    )
+                    if prev_close:
+                        fig_idx.add_hline(
+                            y=prev_close, line_dash="dash", line_color="#64748b",
+                            line_width=1.1, row=r_idx, col=c_idx,
                         )
-                        if prev_close:
-                            fig_idx.add_hline(
-                                y=prev_close, line_dash="dash", line_color="#64748b",
-                                line_width=1.2, row=r_idx, col=c_idx,
-                            )
 
-                with cols_kpi[i]:
+                with cols_kpi[i % len(cols_kpi)]:
                     st.metric(
-                        label=f"{sym} ({trade_date_str}) • KL: {vol:,.0f}",
+                        label=f"{sym} ({trade_date_str})",
                         value=f"{last_px:,.2f}",
                         delta=f"{delta:+.2f} ({pct:+.2f}%)",
                     )
 
-            _style_chart(fig_idx, height=540)
+            _style_chart(fig_idx, height=max(420, n_rows * 240), categorical_x=True)
             fig_idx.update_layout(showlegend=False)
             st.plotly_chart(fig_idx, width="stretch")
+
+        @st.fragment(run_every=5)
+        def _indices_live_fragment():
+            _render_indices_live_body()
+
+        if LIVE_AUTO and idx_date == TODAY_VN:
+            _indices_live_fragment()
+        else:
+            _render_indices_live_body()
 
     # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP ---
     with t2:
@@ -1097,17 +1158,18 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         """)
                     with col_chart:
                         sub_p = df_d.tail(150)
+                        x_vcp = _trading_x_labels(sub_p.index, is_intraday=False)
                         fig_vcp = go.Figure()
                         fig_vcp.add_trace(go.Candlestick(
-                            x=sub_p.index, open=sub_p["Open"], high=sub_p["High"],
+                            x=x_vcp, open=sub_p["Open"], high=sub_p["High"],
                             low=sub_p["Low"], close=sub_p["Close"], name=diag_sym,
                             increasing_line_color="#10b981", decreasing_line_color="#ef4444",
                         ))
                         for ma_col, col_hex in [("MA50", "#f97316"), ("MA150", "#8b5cf6"), ("MA200", "#ef4444")]:
-                            fig_vcp.add_trace(go.Scatter(x=sub_p.index, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.5)))
+                            fig_vcp.add_trace(go.Scatter(x=x_vcp, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.5)))
                         if vcp:
                             fig_vcp.add_hline(y=vcp["buy_point"], line_dash="dot", line_color="#7c3aed", annotation_text=f"Pivot: {vcp['buy_point']:,.2f}")
-                        _style_chart(fig_vcp, height=460)
+                        _style_chart(fig_vcp, height=460, categorical_x=True)
                         fig_vcp.update_layout(xaxis_rangeslider_visible=False)
                         st.plotly_chart(fig_vcp, width="stretch")
 
@@ -1120,13 +1182,14 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     b3.metric("% Sát Đáy 52T", f"{lb['Pct_Bottoming']:.1f}%")
                     b4.metric("Sụt Giảm Từ Đỉnh", f"-{stats_sum['pct_drop']:.1f}%")
 
+                    x_br = _trading_x_labels(df_breadth.index, is_intraday=False)
                     fig_br = make_subplots(specs=[[{"secondary_y": True}]])
-                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Avg_Price"], name="Giá TB HOSE", line=dict(color="#0284c7", width=2)), secondary_y=False)
-                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Above_MA200"], name="% > MA200", line=dict(color="#f59e0b", width=1.8)), secondary_y=True)
-                    fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Bottoming"], name="% Dò đáy 52T", line=dict(color="#8b5cf6", dash="dot")), secondary_y=True)
+                    fig_br.add_trace(go.Scatter(x=x_br, y=df_breadth["Avg_Price"], name="Giá TB HOSE", line=dict(color="#0284c7", width=2)), secondary_y=False)
+                    fig_br.add_trace(go.Scatter(x=x_br, y=df_breadth["Pct_Above_MA200"], name="% > MA200", line=dict(color="#f59e0b", width=1.8)), secondary_y=True)
+                    fig_br.add_trace(go.Scatter(x=x_br, y=df_breadth["Pct_Bottoming"], name="% Dò đáy 52T", line=dict(color="#8b5cf6", dash="dot")), secondary_y=True)
                     fig_br.add_hline(y=20, line_dash="dash", line_color="#ef4444", secondary_y=True)
                     fig_br.add_hline(y=50, line_dash="dash", line_color="#94a3b8", secondary_y=True)
-                    _style_chart(fig_br, height=420)
+                    _style_chart(fig_br, height=420, categorical_x=True)
                     st.plotly_chart(fig_br, width="stretch")
 
     # --- SUB-TAB 3.3: LỌC CP TĂNG MẠNH ---
@@ -1189,16 +1252,23 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
 
 # ==============================================================================
-# WORKSPACE 4: PHÂN TÍCH BIỂU ĐỒ (EOD + INTRADAY + BẢNG GIÁ WEBSOCKET)
+# WORKSPACE 4: PHÂN TÍCH BIỂU ĐỒ (BỎ NGÀY/GIỜ NGHỈ + LIVE WEBSOCKET 5S)
 # ==============================================================================
 elif workspace == "📈 Phân Tích Biểu Đồ":
     t_eod, t_intra = st.tabs(["📉 Biểu Đồ Kỹ Thuật (EOD)", "⚡ Khớp Lệnh Trong Phiên & Bảng Giá SSI"])
 
+    # --- SUB-TAB 4.1: BIỂU ĐỒ KỸ THUẬT EOD ---
     with t_eod:
-        c1, c2, c3, c4, c5 = st.columns([1.4, 1.0, 1.1, 1.1, 1.0], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5 = st.columns([1.4, 1.1, 1.1, 1.1, 1.0], vertical_alignment="bottom")
         ind_sel = c1.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="hist_ind")
-        sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
-        sym_sel = c2.selectbox("Mã cổ phiếu", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
+        if ind_sel == "Chỉ số":
+            sym_list = ALL_MAIN_INDICES + [s for s in get_symbols_by_industry("Chỉ số") if s not in ALL_MAIN_INDICES]
+        elif ind_sel == "Tất cả ngành":
+            sym_list = ALL_MAIN_INDICES + get_symbols_by_industry("Tất cả ngành", exclude_penny=False)
+        else:
+            sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
+
+        sym_sel = c2.selectbox("Mã cổ phiếu / Chỉ số", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
         h_start = c3.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="h_s")
         h_end = c4.date_input("Đến ngày", value=TODAY_VN, key="h_e")
         h_tf = c5.selectbox("Khung", ["1 Ngày", "1 Tuần", "1 Tháng"])
@@ -1216,59 +1286,93 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                     active_mas.append(int(part))
         active_mas = sorted(list(set(active_mas)))
 
-        df_hist = fetch_ssi_ohlcv(sym_sel, h_start - timedelta(days=400), h_end, "D")
-        if not df_hist.empty:
+        def _render_eod_chart_body():
+            ws_mgr.subscribe([sym_sel])
+            tick = ws_mgr.get_snapshot([sym_sel]).get(sym_sel) if h_end >= TODAY_VN else None
+            if tick:
+                st.caption(
+                    f"⚡ **SSI Live ({sym_sel})**: Giá `{tick['last']:,.2f}` "
+                    f"(`{tick['delta']:+.2f}` | `{tick['pct']:+.2f}%`) • Cập nhật `{tick['time']}`"
+                )
+
+            df_hist = fetch_ssi_ohlcv_cached(sym_sel, h_start - timedelta(days=400), h_end, "D")
+            if df_hist.empty:
+                st.warning(f"Không có dữ liệu biểu đồ cho mã {sym_sel}.")
+                return
+
+            if h_end >= TODAY_VN and tick:
+                df_hist = _patch_live_candle(df_hist, tick, is_intraday=False)
+
             raw_ath = float(df_hist["High"].max())
             logic = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
             if h_tf == "1 Tuần":
                 df_hist = df_hist.resample("W-FRI").apply(logic).dropna()
             elif h_tf == "1 Tháng":
-                df_hist = df_hist.resample("ME").apply(logic).dropna()
+                try:
+                    df_hist = df_hist.resample("ME").apply(logic).dropna()
+                except ValueError:
+                    df_hist = df_hist.resample("M").apply(logic).dropna()
 
             for p in active_mas:
                 df_hist[f"MA{p}"] = df_hist["Close"].rolling(p, min_periods=1).mean()
             df_hist["MA20_Vol"] = df_hist["Volume"].rolling(20, min_periods=1).mean()
             plot_df = df_hist[df_hist.index.date >= h_start]
 
-            if not plot_df.empty:
-                fig_c = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.03)
+            if plot_df.empty:
+                return
+
+            x_lbls = _trading_x_labels(plot_df.index, is_intraday=False)
+            fig_c = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.03)
+            fig_c.add_trace(
+                go.Candlestick(
+                    x=x_lbls, open=plot_df["Open"], high=plot_df["High"],
+                    low=plot_df["Low"], close=plot_df["Close"], name=sym_sel,
+                    increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+                ),
+                row=1, col=1,
+            )
+            fallback_cols = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+            for idx_p, p in enumerate(active_mas):
+                col_hex = MA_COLORS.get(p, fallback_cols[idx_p % len(fallback_cols)])
                 fig_c.add_trace(
-                    go.Candlestick(
-                        x=plot_df.index, open=plot_df["Open"], high=plot_df["High"],
-                        low=plot_df["Low"], close=plot_df["Close"], name=sym_sel,
-                        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-                    ),
+                    go.Scatter(x=x_lbls, y=plot_df[f"MA{p}"], name=f"MA{p}", line=dict(color=col_hex, width=1.4)),
                     row=1, col=1,
                 )
-                fallback_cols = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
-                for idx_p, p in enumerate(active_mas):
-                    col_hex = MA_COLORS.get(p, fallback_cols[idx_p % len(fallback_cols)])
-                    fig_c.add_trace(
-                        go.Scatter(x=plot_df.index, y=plot_df[f"MA{p}"], name=f"MA{p}", line=dict(color=col_hex, width=1.4)),
-                        row=1, col=1,
-                    )
-                if show_ath:
-                    last_c = float(plot_df["Close"].iloc[-1])
-                    fig_c.add_hline(y=raw_ath, line_dash="dash", line_color="#9333ea", annotation_text=f"ATH: {raw_ath:,.2f}", row=1, col=1)
-                    fig_c.add_hline(y=last_c, line_dash="dot", line_color="#0284c7", annotation_text=f"Giá: {last_c:,.2f}", row=1, col=1)
+            if show_ath:
+                last_c = float(plot_df["Close"].iloc[-1])
+                fig_c.add_hline(y=raw_ath, line_dash="dash", line_color="#9333ea", annotation_text=f"ATH: {raw_ath:,.2f}", row=1, col=1)
+                fig_c.add_hline(y=last_c, line_dash="dot", line_color="#0284c7", annotation_text=f"Giá: {last_c:,.2f}", row=1, col=1)
 
-                vol_colors = ["#10b981" if c >= o else "#ef4444" for c, o in zip(plot_df["Close"], plot_df["Open"])]
-                fig_c.add_trace(go.Bar(x=plot_df.index, y=plot_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
-                if show_ma_vol:
-                    fig_c.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA20_Vol"], name="MA20 Vol", line=dict(color="#d946ef", width=1.3)), row=2, col=1)
+            vol_colors = ["#10b981" if c >= o else "#ef4444" for c, o in zip(plot_df["Close"], plot_df["Open"])]
+            fig_c.add_trace(go.Bar(x=x_lbls, y=plot_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
+            if show_ma_vol:
+                fig_c.add_trace(go.Scatter(x=x_lbls, y=plot_df["MA20_Vol"], name="MA20 Vol", line=dict(color="#d946ef", width=1.3)), row=2, col=1)
 
-                _style_chart(fig_c, height=620)
-                fig_c.update_layout(xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig_c, width="stretch")
+            _style_chart(fig_c, height=620, categorical_x=True)
+            fig_c.update_layout(xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig_c, width="stretch")
 
+        @st.fragment(run_every=5)
+        def _eod_live_fragment():
+            _render_eod_chart_body()
+
+        if LIVE_AUTO and h_end >= TODAY_VN:
+            _eod_live_fragment()
+        else:
+            _render_eod_chart_body()
+
+    # --- SUB-TAB 4.2: KHỚP LỆNH TRONG PHIÊN (INTRADAY) ---
     with t_intra:
         c1, c2, c3, c4, _ = st.columns([1.1, 1.1, 1.0, 1.0, 1.8], vertical_alignment="bottom")
-        in_sym = c1.text_input("Mã cổ phiếu", value="FPT").strip().upper()
+        in_sym = c1.text_input("Mã CP / Chỉ số", value="FPT").strip().upper()
         in_date = c2.date_input("Ngày khớp lệnh", value=TODAY_VN, key="in_date")
         in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "30", "60"], format_func=lambda x: f"{x} phút")
-        c4.button("🔄 Cập nhật", type="primary", width="stretch", key="btn_intra_ref")
+        if c4.button("🔄 Cập nhật", type="primary", width="stretch", key="btn_intra_ref"):
+            st.cache_data.clear()
 
-        if in_sym:
+        def _render_intraday_body():
+            if not in_sym:
+                return
             ws_mgr.subscribe([in_sym])
             tick = ws_mgr.get_snapshot([in_sym]).get(in_sym)
             if tick:
@@ -1277,37 +1381,51 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                     f"Thay đổi `{tick['delta']:+.2f} ({tick['pct']:+.2f}%)` | Cập nhật lúc `{tick['time']}`"
                 )
 
-            df_in = fetch_ssi_ohlcv(in_sym, in_date, in_date, in_tf)
-            if not df_in.empty:
-                col_tbl, col_ch = st.columns([1.3, 2.7])
-                with col_tbl:
-                    df_disp = df_in.iloc[::-1].copy()
-                    df_disp.index = df_disp.index.strftime("%H:%M")
-                    st.dataframe(
-                        df_disp.style.format({"Open": "{:,.2f}", "High": "{:,.2f}", "Low": "{:,.2f}", "Close": "{:,.2f}", "Volume": "{:,.0f}"}),
-                        height=500, width="stretch",
-                    )
-                with col_ch:
-                    fig_in = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
-                    fig_in.add_trace(
-                        go.Candlestick(
-                            x=df_in.index, open=df_in["Open"], high=df_in["High"],
-                            low=df_in["Low"], close=df_in["Close"], name=in_sym,
-                            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-                        ),
-                        row=1, col=1,
-                    )
-                    v_cols = ["#10b981" if c >= o else "#ef4444" for c, o in zip(df_in["Close"], df_in["Open"])]
-                    fig_in.add_trace(go.Bar(x=df_in.index, y=df_in["Volume"], marker_color=v_cols, name="Vol"), row=2, col=1)
-                    _style_chart(fig_in, height=500)
-                    fig_in.update_layout(xaxis_rangeslider_visible=False)
-                    st.plotly_chart(fig_in, width="stretch")
-            else:
+            df_in = _filter_vn_trading_hours(fetch_ssi_ohlcv_cached(in_sym, in_date, in_date, in_tf))
+            if df_in.empty:
                 st.info("Chưa có dữ liệu khớp lệnh trong ngày đã chọn.")
+                return
+
+            if in_date == TODAY_VN and tick:
+                df_in = _patch_live_candle(df_in, tick, is_intraday=True)
+
+            x_lbls = _trading_x_labels(df_in.index, is_intraday=True)
+            col_tbl, col_ch = st.columns([1.3, 2.7])
+            with col_tbl:
+                df_disp = df_in.iloc[::-1].copy()
+                df_disp.index = df_disp.index.strftime("%H:%M")
+                st.dataframe(
+                    df_disp.style.format({"Open": "{:,.2f}", "High": "{:,.2f}", "Low": "{:,.2f}", "Close": "{:,.2f}", "Volume": "{:,.0f}"}),
+                    height=500, width="stretch",
+                )
+            with col_ch:
+                fig_in = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
+                fig_in.add_trace(
+                    go.Candlestick(
+                        x=x_lbls, open=df_in["Open"], high=df_in["High"],
+                        low=df_in["Low"], close=df_in["Close"], name=in_sym,
+                        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+                    ),
+                    row=1, col=1,
+                )
+                v_cols = ["#10b981" if c >= o else "#ef4444" for c, o in zip(df_in["Close"], df_in["Open"])]
+                fig_in.add_trace(go.Bar(x=x_lbls, y=df_in["Volume"], marker_color=v_cols, name="Vol"), row=2, col=1)
+                _style_chart(fig_in, height=500, categorical_x=True)
+                fig_in.update_layout(xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig_in, width="stretch")
+
+        @st.fragment(run_every=5)
+        def _intraday_live_fragment():
+            _render_intraday_body()
+
+        if LIVE_AUTO and in_date == TODAY_VN:
+            _intraday_live_fragment()
+        else:
+            _render_intraday_body()
 
 
 # ==============================================================================
-# WORKSPACE 5: DANH MỤC NẮM GIỮ & BACKTEST HYBRID
+# WORKSPACE 5: DANH MỤC NẮM GIỮ (LIVE 5S) & BACKTEST HYBRID
 # ==============================================================================
 elif workspace == "💼 Danh Mục & Backtest":
     t_port, t_bt = st.tabs(["📘 Danh Mục Nắm Giữ", "🧪 Backtest Chiến Lược Hybrid"])
@@ -1334,6 +1452,7 @@ elif workspace == "💼 Danh Mục & Backtest":
         port_json_bytes = json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2).encode("utf-8")
         pc3.download_button("💾 Xuất JSON", data=port_json_bytes, file_name="portfolio.json", mime="application/json", width="stretch")
         if pc4.button("🔄 Làm mới giá", type="primary", width="stretch"):
+            clear_batch_cache()
             st.cache_data.clear()
 
         with st.expander("➕ Thêm / Xóa vị thế danh mục", expanded=False):
@@ -1362,8 +1481,12 @@ elif workspace == "💼 Danh Mục & Backtest":
                     port_file.write_text(json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2), encoding="utf-8")
                     st.rerun()
 
-        holdings = st.session_state["portfolio_data"]
-        if holdings:
+        def _render_portfolio_live_body():
+            holdings = st.session_state["portfolio_data"]
+            if not holdings:
+                st.info("Danh mục đang trống. Nhấn '➕ Thêm / Xóa vị thế danh mục' hoặc nhập file `portfolio.json`.")
+                return
+
             syms_p = list(set([h["symbol"] for h in holdings]))
             ws_mgr.subscribe(syms_p)
             live_p = ws_mgr.get_snapshot(syms_p)
@@ -1458,8 +1581,15 @@ elif workspace == "💼 Danh Mục & Backtest":
                 })
             )
             st.dataframe(styled_p, width="stretch", hide_index=True)
+
+        @st.fragment(run_every=5)
+        def _portfolio_live_fragment():
+            _render_portfolio_live_body()
+
+        if LIVE_AUTO:
+            _portfolio_live_fragment()
         else:
-            st.info("Danh mục đang trống. Nhấn '➕ Thêm / Xóa vị thế danh mục' hoặc nhập file `portfolio.json`.")
+            _render_portfolio_live_body()
 
     # --- SUB-TAB 5.2: BACKTEST HYBRID ---
     with t_bt:
@@ -1557,21 +1687,28 @@ elif workspace == "💼 Danh Mục & Backtest":
                 m5.metric("Tài Sản Cuối", f"{s['Final'] / 1e9:,.2f} Tỷ")
                 m6.metric("Max Drawdown", f"{s['Max DD']:.2f}%")
 
+                x_eq = _trading_x_labels(eq.index, is_intraday=False)
                 peak_nav = eq["NAV"].cummax()
                 fig_eq = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.68, 0.32], vertical_spacing=0.05)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=peak_nav, name="Đỉnh NAV", line=dict(color="rgba(239,68,68,0.2)", width=0.5), showlegend=False), row=1, col=1)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["NAV"], name="Tổng NAV", fill="tonexty", fillcolor="rgba(239,68,68,0.12)", line=dict(color="#0284c7", width=2.2)), row=1, col=1)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Exposure"], name="% Tỷ trọng CP", fill="tozeroy", fillcolor="rgba(16,185,129,0.22)", line=dict(color="#10b981", width=1.2)), row=2, col=1)
-                fig_eq.add_trace(go.Scatter(x=eq.index, y=eq["Breadth200"], name="% > MA200", line=dict(color="#f59e0b", dash="dash", width=1.4)), row=2, col=1)
+                fig_eq.add_trace(go.Scatter(x=x_eq, y=peak_nav, name="Đỉnh NAV", line=dict(color="rgba(239,68,68,0.2)", width=0.5), showlegend=False), row=1, col=1)
+                fig_eq.add_trace(go.Scatter(x=x_eq, y=eq["NAV"], name="Tổng NAV", fill="tonexty", fillcolor="rgba(239,68,68,0.12)", line=dict(color="#0284c7", width=2.2)), row=1, col=1)
+                fig_eq.add_trace(go.Scatter(x=x_eq, y=eq["Exposure"], name="% Tỷ trọng CP", fill="tozeroy", fillcolor="rgba(16,185,129,0.22)", line=dict(color="#10b981", width=1.2)), row=2, col=1)
+                fig_eq.add_trace(go.Scatter(x=x_eq, y=eq["Breadth200"], name="% > MA200", line=dict(color="#f59e0b", dash="dash", width=1.4)), row=2, col=1)
 
-                panic_df = eq[eq["IsPanic"]]
-                if not panic_df.empty:
-                    fig_eq.add_trace(go.Scatter(x=panic_df.index, y=[10] * len(panic_df), mode="markers", name="Đáy Hoảng Loạn", marker=dict(color="#ef4444", size=6)), row=2, col=1)
-                climax_df = eq[eq["IsClimax"]]
-                if not climax_df.empty:
-                    fig_eq.add_trace(go.Scatter(x=climax_df.index, y=[90] * len(climax_df), mode="markers", name="Đỉnh Hưng Phấn", marker=dict(color="#8b5cf6", size=6)), row=2, col=1)
+                panic_mask = eq["IsPanic"].values
+                if panic_mask.any():
+                    fig_eq.add_trace(
+                        go.Scatter(x=[x_eq[i] for i, m in enumerate(panic_mask) if m], y=[10] * int(panic_mask.sum()), mode="markers", name="Đáy Hoảng Loạn", marker=dict(color="#ef4444", size=6)),
+                        row=2, col=1,
+                    )
+                climax_mask = eq["IsClimax"].values
+                if climax_mask.any():
+                    fig_eq.add_trace(
+                        go.Scatter(x=[x_eq[i] for i, m in enumerate(climax_mask) if m], y=[90] * int(climax_mask.sum()), mode="markers", name="Đỉnh Hưng Phấn", marker=dict(color="#8b5cf6", size=6)),
+                        row=2, col=1,
+                    )
 
-                _style_chart(fig_eq, height=470)
+                _style_chart(fig_eq, height=470, categorical_x=True)
                 st.plotly_chart(fig_eq, width="stretch")
 
                 sub_t1, sub_t2, sub_t3 = st.tabs(["📝 Sổ Lệnh Chi Tiết", "✅ Deal Đã Đóng", "📊 Lịch Sử Tài Sản"])
