@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +34,8 @@ from core.ssi_client import (
     fetch_ssi_ohlcv,
     fetch_ssi_stock_list,
     get_ssi_ws_manager,
+    vn_now,
+    vn_today,
 )
 
 # ==============================================================================
@@ -71,22 +73,24 @@ st.markdown("""
 # Khởi động SSI WebSocket Manager & Tải danh sách mã SSI
 ws_mgr = get_ssi_ws_manager()
 ssi_stocks_meta = fetch_ssi_stock_list("hose")
+TODAY_VN = vn_today()
 
 
 # ==============================================================================
 # THANH ĐIỀU HƯỚNG ĐỈNH (TOP NAVIGATION BAR - 5 WORKSPACES)
 # ==============================================================================
-hdr_col1, hdr_col2 = st.columns([3, 1])
+hdr_col1, hdr_col2 = st.columns([3, 1.3])
 with hdr_col1:
     st.markdown("### 📊 V11 PRO — Hệ Thống Phân Tích Định Lượng & SSI Realtime")
 with hdr_col2:
+    vn_clock = vn_now().strftime("%d/%m/%Y %H:%M")
     ws_status_html = (
         f'<div style="text-align:right; padding-top:8px;">'
-        f'<span class="ws-badge-on">🟢 SSI WebSocket Connected ({len(ssi_stocks_meta)} mã HOSE)</span>'
+        f'<span class="ws-badge-on">🟢 SSI WS ({len(ssi_stocks_meta)} mã) • {vn_clock}</span>'
         f'</div>'
         if ws_mgr.is_connected else
         f'<div style="text-align:right; padding-top:8px;">'
-        f'<span class="ws-badge-off">🟡 SSI WebSocket Đang kết nối lại...</span>'
+        f'<span class="ws-badge-off">🟡 SSI WS Reconnecting • {vn_clock}</span>'
         f'</div>'
     )
     st.markdown(ws_status_html, unsafe_allow_html=True)
@@ -120,7 +124,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
     with t1:
         c1, c2, c3 = st.columns([1.2, 1.5, 3])
         with c1:
-            idx_date = st.date_input("Ngày giao dịch", value=date.today(), key="idx_live_date")
+            idx_date = st.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
         with c2:
             selected_indices = st.multiselect(
                 "Chọn chỉ số hiển thị",
@@ -137,7 +141,6 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             ws_mgr.subscribe(selected_indices)
             live_ticks = ws_mgr.get_snapshot(selected_indices)
 
-            # Tải dữ liệu khung 1 phút từ SSI Chart API
             cols_kpi = st.columns(len(selected_indices))
             fig_idx = make_subplots(
                 rows=2, cols=2,
@@ -165,7 +168,6 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         delta = last_px - prev_close
                         pct = (delta / prev_close) * 100.0
 
-                    # Ưu tiên giá mới nhất từ WebSocket SSI nếu đang trong phiên
                     if sym in live_ticks and live_ticks[sym].get("last"):
                         last_px = float(live_ticks[sym]["last"])
                         if prev_close:
@@ -201,7 +203,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
     with t2:
         col_tm1, col_tm2 = st.columns([1.2, 4])
         with col_tm1:
-            tm_date = st.date_input("Ngày bản đồ nhiệt", value=date.today(), key="tm_date")
+            tm_date = st.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
         with col_tm2:
             st.write("")
             run_tm = st.button("🗺️ Tạo Bản Đồ Nhiệt Dòng Tiền", type="primary")
@@ -251,7 +253,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
     # --- SUB-TAB 1.3: SỨC KHỎE & NGÀY PHÂN PHỐI ---
     with t3:
         c1, c2, c3, c4 = st.columns(4)
-        ma_date = c1.date_input("Ngày phân tích", value=date.today(), key="ma_date")
+        ma_date = c1.date_input("Ngày phân tích", value=TODAY_VN, key="ma_date")
         dd_win = c2.number_input("Cửa sổ DD (phiên)", 10, 60, 25)
         cancel_reb = c3.number_input("Xóa DD khi hồi (%)", 3.0, 15.0, 6.0, step=0.5)
         scan_sec = c4.checkbox("Quét sức mạnh ngành (>MA20)", value=True)
@@ -324,7 +326,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
     with t_ma:
         c1, c2, c3 = st.columns([2, 1.5, 2])
         ind_choice = c1.selectbox("Nhóm ngành", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"])
-        ma_asof = c2.date_input("Ngày tra cứu", value=date.today(), key="sec_ma_date")
+        ma_asof = c2.date_input("Ngày tra cứu", value=TODAY_VN, key="sec_ma_date")
         c3.write("")
         if c3.button("🔄 Quét Xu Hướng MA", type="primary"):
             syms = get_symbols_by_industry(ind_choice, exclude_penny=(ind_choice == "Tất cả ngành"))
@@ -375,7 +377,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
 
     with t_mf:
         c1, c2, c3, c4 = st.columns([1.2, 1, 1.5, 1.2])
-        mf_date = c1.date_input("Ngày kết thúc", value=date.today(), key="mf_date")
+        mf_date = c1.date_input("Ngày kết thúc", value=TODAY_VN, key="mf_date")
         mf_days = c2.number_input("Số phiên", 3, 60, 10)
         mf_method = c3.selectbox("Phương pháp", ["ΔP × Vol (VNĐ)", "Signed TP × Vol (VNĐ)", "CMF × GTGD (VNĐ)"])
         c4.write("")
@@ -401,7 +403,6 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                 sub["MF_mult"] = (((sub["Close"] - sub["Low"]) - (sub["High"] - sub["Close"])) / hl).fillna(0.0)
 
                 calc = sub.iloc[1:]
-                # Giá đã chuẩn hóa về nghìn VNĐ -> nhân 1000 để ra VNĐ thực
                 vol = calc["Volume"].astype(float)
                 tv = float((calc["Close"] * 1000.0 * vol).sum())
                 dp_vol = float(((calc["Close"] - calc["PrevClose"]) * 1000.0 * vol).sum())
@@ -454,7 +455,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             syms = get_symbols_by_industry("Tất cả ngành", exclude_penny=True) + ["VNINDEX"]
             prog = st.progress(0)
             dfs = fetch_batch_ohlcv_ssi(
-                syms, date.today() - timedelta(days=350), date.today(), "D",
+                syms, TODAY_VN - timedelta(days=350), TODAY_VN, "D",
                 progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
@@ -503,8 +504,8 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
     # --- SUB-TAB 3.2: MINERVINI & VCP PRO ---
     with t_min:
         c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1.5])
-        min_start = c1.date_input("Từ ngày", value=date.today() - timedelta(days=365), key="min_s")
-        min_end = c2.date_input("Đến ngày", value=date.today(), key="min_e")
+        min_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="min_s")
+        min_end = c2.date_input("Đến ngày", value=TODAY_VN, key="min_e")
         min_rs = c3.number_input("RS Rating tối thiểu", 50, 99, 70)
         c4.write("")
         if c4.button("🚀 Quét Siêu Cổ Phiếu Minervini & VCP", type="primary"):
@@ -539,7 +540,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
                 col_info, col_chart = st.columns([1.2, 2.8])
                 with col_info:
-                    st.markdown(f"**Trạng thái:** :{ 'green' if '2' in p_title else 'orange' }[{p_title}]")
+                    st.markdown(f"**Trạng thái:** :{'green' if '2' in p_title else 'orange'}[{p_title}]")
                     st.write(p_desc)
                     if vcp:
                         st.success(f"**Mô hình VCP {vcp['num_contractions']}T:** {' -> '.join([str(x)+'%' for x in vcp['ranges']])}\n\n**Pivot:** `{vcp['buy_point']:,.2f}` ({vcp['status']})")
@@ -574,8 +575,8 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
     # --- SUB-TAB 3.3: LỌC CP TĂNG MẠNH ---
     with t_gain:
         c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.5, 1, 1.2])
-        g_start = c1.date_input("Từ ngày", value=date.today() - timedelta(days=30), key="g_s")
-        g_end = c2.date_input("Đến ngày", value=date.today(), key="g_e")
+        g_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=30), key="g_s")
+        g_end = c2.date_input("Đến ngày", value=TODAY_VN, key="g_e")
         g_ind = c3.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="g_ind")
         g_top = c4.selectbox("Top hiển thị", [10, 20, 30, 50], index=1)
         c5.write("")
@@ -618,8 +619,8 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
         ind_sel = c1.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="hist_ind")
         sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
         sym_sel = c2.selectbox("Mã cổ phiếu", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
-        h_start = c3.date_input("Từ ngày", value=date.today() - timedelta(days=365), key="h_s")
-        h_end = c4.date_input("Đến ngày", value=date.today(), key="h_e")
+        h_start = c3.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="h_s")
+        h_end = c4.date_input("Đến ngày", value=TODAY_VN, key="h_e")
 
         ma_sel = st.multiselect("Đường trung bình (MA)", [10, 20, 50, 100, 200], default=[10, 20, 50])
         show_ath = st.checkbox("Hiển thị Đỉnh lịch sử (ATH)", value=True)
@@ -655,7 +656,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
     with t_intra:
         c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
         in_sym = c1.text_input("Nhập mã cổ phiếu", value="FPT").strip().upper()
-        in_date = c2.date_input("Ngày khớp lệnh", value=date.today(), key="in_date")
+        in_date = c2.date_input("Ngày khớp lệnh", value=TODAY_VN, key="in_date")
         in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "60"], format_func=lambda x: f"{x} phút")
 
         if in_sym:
@@ -698,7 +699,7 @@ elif workspace == "💼 Danh Mục & Backtest":
         with st.expander("➕ Thêm vị thế mới vào danh mục", expanded=False):
             ac1, ac2, ac3, ac4, ac5 = st.columns([1, 1.2, 1, 1, 1.5])
             new_sym = ac1.text_input("Mã CP", placeholder="VD: FPT").strip().upper()
-            new_bdate = ac2.date_input("Ngày mua", value=date.today())
+            new_bdate = ac2.date_input("Ngày mua", value=TODAY_VN)
             new_bpx = ac3.number_input("Giá mua (nghìn)", 0.0, 1000.0, 0.0, step=0.1)
             new_qty = ac4.number_input("Khối lượng", 0, 10_000_000, 100, step=100)
             new_note = ac5.text_input("Ghi chú")
@@ -721,7 +722,7 @@ elif workspace == "💼 Danh Mục & Backtest":
             syms_p = list(set([h["symbol"] for h in holdings]))
             ws_mgr.subscribe(syms_p)
             live_p = ws_mgr.get_snapshot(syms_p)
-            hist_p = fetch_batch_ohlcv_ssi(syms_p, date.today() - timedelta(days=300), date.today(), "D")
+            hist_p = fetch_batch_ohlcv_ssi(syms_p, TODAY_VN - timedelta(days=300), TODAY_VN, "D")
 
             rows_p = []
             tot_cost = tot_val = 0.0
@@ -781,7 +782,7 @@ elif workspace == "💼 Danh Mục & Backtest":
             bt_ind = st.selectbox("Vũ trụ cổ phiếu", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"], key="bt_ind")
             bt_cap = st.number_input("Vốn ban đầu (VNĐ)", 10_000_000.0, 1e12, 1_000_000_000.0, step=100_000_000.0)
             bt_start = st.date_input("Từ ngày", value=date(2024, 10, 17), key="bt_s")
-            bt_end = st.date_input("Đến ngày", value=date.today(), key="bt_e")
+            bt_end = st.date_input("Đến ngày", value=TODAY_VN, key="bt_e")
 
             c_a, c_b = st.columns(2)
             bt_max_pos = c_a.number_input("Số mã max", 1, 20, 5)
