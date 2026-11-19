@@ -359,8 +359,8 @@ def fetch_ssi_ohlcv(
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=900, show_spinner=False)
 _BATCH_CACHE: Dict[tuple, tuple[float, Dict[str, pd.DataFrame]]] = {}
+_BATCH_CACHE_LOCK = threading.Lock()
 _BATCH_CACHE_TTL = 900       # Lưu cache 15 phút
 _BATCH_CACHE_MAX_ITEMS = 8   # Giới hạn RAM cho Streamlit Cloud
 
@@ -373,7 +373,7 @@ def fetch_batch_ohlcv_ssi(
     max_workers: int = 16,
     _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """Tải song song dữ liệu OHLCV từ SSI kèm cache TTL (tránh lỗi CacheReplayClosureError)."""
+    """Tải song song dữ liệu OHLCV từ SSI kèm cache TTL trong RAM (tránh CacheReplayClosureError)."""
     unique_syms = sorted(list(set(symbols)))
     total = len(unique_syms)
     if total == 0:
@@ -381,11 +381,18 @@ def fetch_batch_ohlcv_ssi(
 
     cache_key = (tuple(unique_syms), start_date, end_date, resolution)
     now_ts = time.time()
-    cached = _BATCH_CACHE.get(cache_key)
-    if cached and (now_ts - cached[0]) < _BATCH_CACHE_TTL:
+
+    with _BATCH_CACHE_LOCK:
+        cached = _BATCH_CACHE.get(cache_key)
+        if cached and (now_ts - cached[0]) < _BATCH_CACHE_TTL:
+            cached_data = {k: v.copy() for k, v in cached[1].items()}
+        else:
+            cached_data = None
+
+    if cached_data is not None:
         if _progress_cb:
             _progress_cb(total, total)
-        return {k: v.copy() for k, v in cached[1].items()}
+        return cached_data
 
     results: Dict[str, pd.DataFrame] = {}
     done = 0
@@ -406,9 +413,10 @@ def fetch_batch_ohlcv_ssi(
             if _progress_cb:
                 _progress_cb(done, total)
 
-    if len(_BATCH_CACHE) >= _BATCH_CACHE_MAX_ITEMS:
-        oldest_key = min(_BATCH_CACHE, key=lambda k: _BATCH_CACHE[k][0])
-        _BATCH_CACHE.pop(oldest_key, None)
+    with _BATCH_CACHE_LOCK:
+        if len(_BATCH_CACHE) >= _BATCH_CACHE_MAX_ITEMS:
+            oldest_key = min(_BATCH_CACHE, key=lambda k: _BATCH_CACHE[k][0])
+            _BATCH_CACHE.pop(oldest_key, None)
+        _BATCH_CACHE[cache_key] = (now_ts, results)
 
-    _BATCH_CACHE[cache_key] = (now_ts, results)
     return {k: v.copy() for k, v in results.items()}
