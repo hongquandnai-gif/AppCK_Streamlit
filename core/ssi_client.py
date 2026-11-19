@@ -40,6 +40,50 @@ SSI_HEADERS = {
     "Referer": "https://iboard.ssi.com.vn/",
 }
 
+# Tập hợp đầy đủ mã chỉ số (tránh chia nhầm 1000 cho điểm chỉ số)
+ALL_INDEX_SYMBOLS = set(INDEX_SYMBOLS) | {
+    "VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSML", "VNSMALL",
+    "HNXINDEX", "HNXUPCOMINDEX", "VNMIDCAP", "VNSMALLCAP", "VN100", "VNALL",
+}
+
+# Ánh xạ mã hiển thị trong App -> danh sách mã thử gọi trên SSI iBoard
+SSI_INDEX_ALIASES: Dict[str, List[str]] = {
+    "VNINDEX": ["VNINDEX"],
+    "VN30": ["VN30"],
+    "HNX": ["HNXINDEX", "HNXIndex", "HNX"],
+    "HNXINDEX": ["HNXINDEX", "HNXIndex", "HNX"],
+    "UPCOM": ["HNXUPCOMINDEX", "HNXUpcomIndex", "UPCOM"],
+    "HNXUPCOMINDEX": ["HNXUPCOMINDEX", "HNXUpcomIndex", "UPCOM"],
+    "VNMID": ["VNMID", "VNMidcap"],
+    "VNSMALL": ["VNSML", "VNSmallcap", "VNSMALL"],
+    "VNSML": ["VNSML", "VNSmallcap", "VNSMALL"],
+}
+
+# Fallback VNDirect cho các chỉ số nếu SSI thiếu nến lịch sử/intraday
+VNDIRECT_INDEX_MAP: Dict[str, str] = {
+    "VNINDEX": "VNINDEX",
+    "VN30": "VN30",
+    "HNX": "HNX",
+    "HNXINDEX": "HNX",
+    "UPCOM": "UPCOM",
+    "HNXUPCOMINDEX": "UPCOM",
+    "VNMID": "VNMID",
+    "VNSMALL": "VNSML",
+    "VNSML": "VNSML",
+}
+
+# Ánh xạ ngược từ mã WebSocket SSI trả về sang tên chuẩn của App
+WS_INDEX_CANONICAL_MIRROR: Dict[str, List[str]] = {
+    "HNXINDEX": ["HNX", "HNXINDEX"],
+    "HNXUPCOMINDEX": ["UPCOM", "HNXUPCOMINDEX"],
+    "VNMIDCAP": ["VNMID"],
+    "VNMID": ["VNMID"],
+    "VNSML": ["VNSMALL", "VNSML"],
+    "VNSMALLCAP": ["VNSMALL", "VNSML"],
+}
+
+_RESOLVED_SSI_SYMBOL: Dict[str, str] = {}
+
 
 # ==============================================================================
 # 1. LẤY DANH SÁCH MÃ TỪ SSI IBOARD (ƯU TIÊN SSI, FALLBACK LOCAL)
@@ -143,8 +187,8 @@ class SSIWebSocketManager:
         if not self._ws:
             return
         try:
-            stock_syms = [s for s in symbols if s not in INDEX_SYMBOLS]
-            idx_syms = [s for s in symbols if s in INDEX_SYMBOLS]
+            stock_syms = [s for s in symbols if s not in ALL_INDEX_SYMBOLS]
+            idx_syms = [s for s in symbols if s in ALL_INDEX_SYMBOLS]
 
             if stock_syms:
                 msg_stock = {
@@ -156,10 +200,13 @@ class SSIWebSocketManager:
                 self._ws.send(json.dumps(msg_stock))
 
             if idx_syms:
+                expanded_idx = []
+                for s in idx_syms:
+                    expanded_idx.extend(SSI_INDEX_ALIASES.get(s, [s]))
                 msg_idx = {
                     "type": "sub",
                     "topic": "indexRealtimeByList",
-                    "variables": idx_syms,
+                    "variables": sorted(list(set(expanded_idx))),
                     "component": "indexBar",
                 }
                 self._ws.send(json.dumps(msg_idx))
@@ -190,12 +237,17 @@ class SSIWebSocketManager:
         except Exception:
             pass
 
+    def _store_tick_locked(self, sym: str, tick_obj: dict):
+        targets = set([sym] + WS_INDEX_CANONICAL_MIRROR.get(sym, []))
+        for t_sym in targets:
+            self._live_ticks[t_sym] = dict(tick_obj, symbol=t_sym)
+
     def _parse_dict_tick(self, item: dict):
         sym = str(item.get("stockSymbol") or item.get("indexId") or item.get("sym") or "").upper().strip()
         if not sym:
             return
 
-        is_idx = sym in INDEX_SYMBOLS
+        is_idx = sym in ALL_INDEX_SYMBOLS
         div = 1.0 if is_idx else 1000.0
 
         raw_last = item.get("matchedPrice") or item.get("indexValue") or item.get("lastPrice") or item.get("c")
@@ -219,7 +271,7 @@ class SSIWebSocketManager:
             delta = (last_val - ref_val) if (ref_val and ref_val > 0) else 0.0
             pct = (delta / ref_val * 100.0) if (ref_val and ref_val > 0) else 0.0
 
-            self._live_ticks[sym] = {
+            tick_obj = {
                 "symbol": sym,
                 "last": last_val,
                 "ref": ref_val,
@@ -228,6 +280,7 @@ class SSIWebSocketManager:
                 "volume": float(raw_vol) if raw_vol is not None else prev.get("volume", 0.0),
                 "time": vn_now().strftime("%H:%M:%S"),
             }
+            self._store_tick_locked(sym, tick_obj)
 
     def _parse_pipe_tick(self, raw: str):
         parts = raw.split("|")
@@ -237,7 +290,7 @@ class SSIWebSocketManager:
         sym = header.split("#")[-1].strip().upper()
         if not sym:
             return
-        is_idx = sym in INDEX_SYMBOLS
+        is_idx = sym in ALL_INDEX_SYMBOLS
         div = 1.0 if is_idx else 1000.0
 
         try:
@@ -256,7 +309,7 @@ class SSIWebSocketManager:
                     ref_val = prev.get("ref")
                     delta = (last_val - ref_val) if ref_val else 0.0
                     pct = (delta / ref_val * 100.0) if ref_val else 0.0
-                    self._live_ticks[sym] = {
+                    tick_obj = {
                         "symbol": sym,
                         "last": last_val,
                         "ref": ref_val,
@@ -265,6 +318,7 @@ class SSIWebSocketManager:
                         "volume": prev.get("volume", 0.0),
                         "time": vn_now().strftime("%H:%M:%S"),
                     }
+                    self._store_tick_locked(sym, tick_obj)
         except Exception:
             pass
 
@@ -301,13 +355,37 @@ class SSIWebSocketManager:
 @st.cache_resource
 def get_ssi_ws_manager() -> SSIWebSocketManager:
     mgr = SSIWebSocketManager()
-    mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "FPT", "SSI", "VCB", "HPG", "MWG"])
+    mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL", "FPT", "SSI", "VCB", "HPG", "MWG"])
     return mgr
 
 
 # ==============================================================================
-# 3. API LẤY DỮ LIỆU OHLCV LỊCH SỬ & INTRADAY (SSI iBoard Chart API)
+# 3. API LẤY DỮ LIỆU OHLCV LỊCH SỬ & INTRADAY (SSI iBoard + FALLBACK VNDIRECT)
 # ==============================================================================
+def _parse_tv_payload(data: dict, symbol: str) -> pd.DataFrame:
+    if not data or "t" not in data or len(data["t"]) == 0:
+        return pd.DataFrame()
+    df = pd.DataFrame({
+        "Time": pd.to_datetime(data["t"], unit="s", utc=True)
+        .tz_convert(VN_TZ)
+        .tz_localize(None),
+        "Open": pd.to_numeric(data["o"], errors="coerce"),
+        "High": pd.to_numeric(data["h"], errors="coerce"),
+        "Low": pd.to_numeric(data["l"], errors="coerce"),
+        "Close": pd.to_numeric(data["c"], errors="coerce"),
+        "Volume": pd.to_numeric(data["v"], errors="coerce"),
+    }).dropna(subset=["Close"])
+
+    df = df.set_index("Time").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+
+    if symbol.upper() not in ALL_INDEX_SYMBOLS and not df.empty:
+        if df["Close"].median() > 500:
+            for col in ["Open", "High", "Low", "Close"]:
+                df[col] = df[col] / 1000.0
+    return df
+
+
 def fetch_ssi_ohlcv(
     symbol: str,
     start_date: date,
@@ -315,54 +393,78 @@ def fetch_ssi_ohlcv(
     resolution: str = "D",
 ) -> pd.DataFrame:
     """
-    Lấy dữ liệu nến OHLCV từ SSI iBoard Chart API (resolution: 'D', '1', '5', '15', '30', '60').
-    Tự động chuẩn hóa múi giờ Asia/Ho_Chi_Minh, khử trùng lặp index và đổi giá về nghìn VNĐ.
+    Lấy dữ liệu nến OHLCV từ SSI iBoard (hỗ trợ alias cho HNX, UPCOM, VNMID, VNSMALL).
+    Tự động fallback sang VNDirect dchart nếu SSI không có lịch sử cho chỉ số phụ.
     """
+    sym_u = symbol.upper().strip()
     dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
     dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
-    t_from = int(dt_from.timestamp())
-    t_to = int(dt_to.timestamp())
+    t_from, t_to = int(dt_from.timestamp()), int(dt_to.timestamp())
 
-    url = (
-        f"https://iboard-api.ssi.com.vn/statistics/charts/history"
-        f"?resolution={resolution}&symbol={symbol.upper()}&from={t_from}&to={t_to}"
-    )
+    candidates = SSI_INDEX_ALIASES.get(sym_u, [sym_u])
+    if sym_u in _RESOLVED_SSI_SYMBOL:
+        resolved = _RESOLVED_SSI_SYMBOL[sym_u]
+        candidates = [resolved] + [c for c in candidates if c != resolved]
 
-    try:
-        resp = requests.get(url, headers=SSI_HEADERS, timeout=15)
-        if resp.status_code == 200:
-            raw = resp.json()
-            data = raw.get("data", raw) if isinstance(raw, dict) else {}
-            if data and "t" in data and len(data["t"]) > 0:
-                df = pd.DataFrame({
-                    "Time": pd.to_datetime(data["t"], unit="s", utc=True)
-                    .tz_convert(VN_TZ)
-                    .tz_localize(None),
-                    "Open": pd.to_numeric(data["o"], errors="coerce"),
-                    "High": pd.to_numeric(data["h"], errors="coerce"),
-                    "Low": pd.to_numeric(data["l"], errors="coerce"),
-                    "Close": pd.to_numeric(data["c"], errors="coerce"),
-                    "Volume": pd.to_numeric(data["v"], errors="coerce"),
-                }).dropna(subset=["Close"])
+    for cand in candidates:
+        url = (
+            f"https://iboard-api.ssi.com.vn/statistics/charts/history"
+            f"?resolution={resolution}&symbol={cand}&from={t_from}&to={t_to}"
+        )
+        try:
+            resp = requests.get(url, headers=SSI_HEADERS, timeout=12)
+            if resp.status_code == 200:
+                raw = resp.json()
+                data = raw.get("data", raw) if isinstance(raw, dict) else {}
+                df = _parse_tv_payload(data, sym_u)
+                if not df.empty:
+                    _RESOLVED_SSI_SYMBOL[sym_u] = cand
+                    return df
+        except Exception:
+            continue
 
-                df = df.set_index("Time").sort_index()
-                df = df[~df.index.duplicated(keep="last")]
-
-                if symbol.upper() not in INDEX_SYMBOLS and not df.empty:
-                    if df["Close"].median() > 500:
-                        for col in ["Open", "High", "Low", "Close"]:
-                            df[col] = df[col] / 1000.0
-                return df
-    except Exception:
-        pass
+    # Fallback VNDirect cho các chỉ số (HNX, UPCOM, VNMID, VNSMALL)
+    if sym_u in VNDIRECT_INDEX_MAP:
+        vnd_sym = VNDIRECT_INDEX_MAP[sym_u]
+        vnd_url = (
+            f"https://dchart-api.vndirect.com.vn/dchart/history"
+            f"?symbol={vnd_sym}&resolution={resolution}&from={t_from}&to={t_to}"
+        )
+        try:
+            resp = requests.get(vnd_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+            if resp.status_code == 200:
+                df = _parse_tv_payload(resp.json(), sym_u)
+                if not df.empty:
+                    return df
+        except Exception:
+            pass
 
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ssi_ohlcv_cached(
+    symbol: str,
+    start_date: date,
+    end_date: date,
+    resolution: str = "D",
+) -> pd.DataFrame:
+    """Bản có cache 60s phục vụ fragment Live Auto-Update (5s) không spam REST API."""
+    return fetch_ssi_ohlcv(symbol, start_date, end_date, resolution)
+
+
+# ==============================================================================
+# 4. TẢI HÀNG LOẠT SONG SONG KÈM CACHE TTL TRONG RAM (TRÁNH CacheReplayClosureError)
+# ==============================================================================
 _BATCH_CACHE: Dict[tuple, tuple[float, Dict[str, pd.DataFrame]]] = {}
 _BATCH_CACHE_LOCK = threading.Lock()
-_BATCH_CACHE_TTL = 900       # Lưu cache 15 phút
+_BATCH_CACHE_TTL = 900       # 15 phút
 _BATCH_CACHE_MAX_ITEMS = 8   # Giới hạn RAM cho Streamlit Cloud
+
+
+def clear_batch_cache() -> None:
+    with _BATCH_CACHE_LOCK:
+        _BATCH_CACHE.clear()
 
 
 def fetch_batch_ohlcv_ssi(
@@ -373,7 +475,6 @@ def fetch_batch_ohlcv_ssi(
     max_workers: int = 16,
     _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """Tải song song dữ liệu OHLCV từ SSI kèm cache TTL trong RAM (tránh CacheReplayClosureError)."""
     unique_syms = sorted(list(set(symbols)))
     total = len(unique_syms)
     if total == 0:
