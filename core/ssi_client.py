@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from typing import Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,19 @@ from core.constants import (
     INDEX_SYMBOLS,
     is_penny_stock,
 )
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def vn_now() -> datetime:
+    """Trả về thời gian hiện tại theo múi giờ Việt Nam (Asia/Ho_Chi_Minh)."""
+    return datetime.now(VN_TZ)
+
+
+def vn_today() -> date:
+    """Trả về ngày hiện tại theo múi giờ Việt Nam (tránh lệch UTC sau 17h chiều)."""
+    return vn_now().date()
+
 
 SSI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -46,7 +60,6 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
             items = payload.get("data", []) if isinstance(payload, dict) else []
             for item in items:
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
-                # Chỉ lấy mã cổ phiếu 3 ký tự chuẩn (loại bỏ chứng quyền, trái phiếu, ETF lẻ nếu cần)
                 if len(sym) == 3 and sym.isalpha():
                     ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(
                         sym,
@@ -64,7 +77,6 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
     except Exception:
         pass
 
-    # Fallback sang danh sách cục bộ nếu SSI không phản hồi
     if not stock_dict:
         for sym, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items():
             if ind != "Chỉ số" and len(sym) == 3:
@@ -139,7 +151,6 @@ class SSIWebSocketManager:
         if not self._ws:
             return
         try:
-            # Gửi gói đăng ký theo chuẩn SSI iBoard Pushstream
             stock_syms = [s for s in symbols if s not in INDEX_SYMBOLS]
             idx_syms = [s for s in symbols if s in INDEX_SYMBOLS]
 
@@ -171,9 +182,8 @@ class SSIWebSocketManager:
             self._send_sub_payload(syms)
 
     def _on_message(self, ws, message: str):
-        self._last_msg_time = datetime.now()
+        self._last_msg_time = vn_now()
         try:
-            # SSI pushstream có thể gửi chuỗi JSON hoặc chuỗi phân tách dấu '|'
             if message.startswith("{"):
                 data = json.loads(message)
                 payload = data.get("data") or data
@@ -193,7 +203,6 @@ class SSIWebSocketManager:
         if not sym:
             return
 
-        # Giá cổ phiếu SSI trả về đơn vị đồng (VD: 25500 -> 25.5), chỉ số giữ nguyên điểm
         is_idx = sym in INDEX_SYMBOLS
         div = 1.0 if is_idx else 1000.0
 
@@ -224,11 +233,10 @@ class SSIWebSocketManager:
                 "delta": delta,
                 "pct": pct,
                 "volume": float(raw_vol) if raw_vol is not None else prev.get("volume", 0.0),
-                "time": datetime.now().strftime("%H:%M:%S"),
+                "time": vn_now().strftime("%H:%M:%S"),
             }
 
     def _parse_pipe_tick(self, raw: str):
-        """Parse gói tin dạng chuỗi phân tách '|' của SSI Pushstream (S#...|I#...)."""
         parts = raw.split("|")
         if len(parts) < 5:
             return
@@ -240,7 +248,6 @@ class SSIWebSocketManager:
         div = 1.0 if is_idx else 1000.0
 
         try:
-            # Tìm các trường số hợp lệ trong gói tin
             nums = []
             for p in parts[1:15]:
                 try:
@@ -263,7 +270,7 @@ class SSIWebSocketManager:
                         "delta": delta,
                         "pct": pct,
                         "volume": prev.get("volume", 0.0),
-                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "time": vn_now().strftime("%H:%M:%S"),
                     }
         except Exception:
             pass
@@ -317,10 +324,12 @@ def fetch_ssi_ohlcv(
 ) -> pd.DataFrame:
     """
     Lấy dữ liệu nến OHLCV từ SSI iBoard Chart API (resolution: 'D', '1', '5', '15', '60').
-    Tự động chuẩn hóa đơn vị giá cổ phiếu về nghìn VNĐ (khớp với VNDirect/Amibroker).
+    Tạo mốc timestamp theo đúng múi giờ Asia/Ho_Chi_Minh để không bị lệch ngày khi server chạy UTC.
     """
-    t_from = int(datetime.combine(start_date, datetime.min.time()).timestamp())
-    t_to = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+    dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
+    dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
+    t_from = int(dt_from.timestamp())
+    t_to = int(dt_to.timestamp())
 
     url = (
         f"https://iboard-api.ssi.com.vn/statistics/charts/history"
@@ -335,7 +344,7 @@ def fetch_ssi_ohlcv(
             if data and "t" in data and len(data["t"]) > 0:
                 df = pd.DataFrame({
                     "Time": pd.to_datetime(data["t"], unit="s", utc=True)
-                    .tz_convert("Asia/Ho_Chi_Minh")
+                    .tz_convert(VN_TZ)
                     .tz_localize(None),
                     "Open": pd.to_numeric(data["o"], errors="coerce"),
                     "High": pd.to_numeric(data["h"], errors="coerce"),
@@ -345,7 +354,6 @@ def fetch_ssi_ohlcv(
                 }).dropna(subset=["Close"])
 
                 df = df.set_index("Time").sort_index()
-                # Chuẩn hóa giá cổ phiếu nếu SSI trả về đơn vị đồng (VD: 85000 -> 85.0)
                 if symbol.upper() not in INDEX_SYMBOLS and not df.empty:
                     if df["Close"].median() > 500:
                         for col in ["Open", "High", "Low", "Close"]:
