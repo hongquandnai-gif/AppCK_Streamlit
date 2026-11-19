@@ -5,11 +5,10 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -47,10 +46,6 @@ SSI_HEADERS = {
 # ==============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
-    """
-    Lấy danh sách mã cổ phiếu trực tiếp từ SSI iBoard.
-    Trả về dict: {symbol: {'symbol': ..., 'companyName': ..., 'industry': ..., 'exchange': ...}}
-    """
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
     stock_dict: Dict[str, dict] = {}
     try:
@@ -96,10 +91,6 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
 # 2. SSI WEBSOCKET REALTIME STREAM MANAGER (CHẠY NỀN ĐA LUỒNG)
 # ==============================================================================
 class SSIWebSocketManager:
-    """
-    Quản lý kết nối WebSocket tới SSI iBoard Pushstream.
-    Lưu trữ dữ liệu khớp lệnh thời gian thực của cổ phiếu và chỉ số trong bộ nhớ.
-    """
     WS_URL = "wss://iboard-pushstream.ssi.com.vn/realtime"
 
     def __init__(self):
@@ -143,9 +134,10 @@ class SSIWebSocketManager:
     def subscribe(self, symbols: List[str]):
         clean_syms = [s.upper().strip() for s in symbols if s]
         with self._lock:
+            new_syms = [s for s in clean_syms if s not in self._subscribed]
             self._subscribed.update(clean_syms)
-        if self._ws and self._connected and clean_syms:
-            self._send_sub_payload(clean_syms)
+        if self._ws and self._connected and new_syms:
+            self._send_sub_payload(new_syms)
 
     def _send_sub_payload(self, symbols: List[str]):
         if not self._ws:
@@ -213,11 +205,12 @@ class SSIWebSocketManager:
         if raw_last is None:
             return
 
-        last_val = float(raw_last) / div if float(raw_last) > 500 and not is_idx else float(raw_last)
-        ref_val = (
-            (float(raw_ref) / div if float(raw_ref) > 500 and not is_idx else float(raw_ref))
-            if raw_ref is not None else None
-        )
+        last_f = float(raw_last)
+        last_val = last_f / div if (last_f > 500 and not is_idx) else last_f
+        ref_val = None
+        if raw_ref is not None:
+            ref_f = float(raw_ref)
+            ref_val = ref_f / div if (ref_f > 500 and not is_idx) else ref_f
 
         with self._lock:
             prev = self._live_ticks.get(sym, {})
@@ -307,7 +300,6 @@ class SSIWebSocketManager:
 
 @st.cache_resource
 def get_ssi_ws_manager() -> SSIWebSocketManager:
-    """Singleton WebSocket Manager dùng chung xuyên suốt phiên làm việc của Streamlit."""
     mgr = SSIWebSocketManager()
     mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "FPT", "SSI", "VCB", "HPG", "MWG"])
     return mgr
@@ -323,8 +315,8 @@ def fetch_ssi_ohlcv(
     resolution: str = "D",
 ) -> pd.DataFrame:
     """
-    Lấy dữ liệu nến OHLCV từ SSI iBoard Chart API (resolution: 'D', '1', '5', '15', '60').
-    Tạo mốc timestamp theo đúng múi giờ Asia/Ho_Chi_Minh để không bị lệch ngày khi server chạy UTC.
+    Lấy dữ liệu nến OHLCV từ SSI iBoard Chart API (resolution: 'D', '1', '5', '15', '30', '60').
+    Tự động chuẩn hóa múi giờ Asia/Ho_Chi_Minh, khử trùng lặp index và đổi giá về nghìn VNĐ.
     """
     dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
     dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
@@ -354,6 +346,8 @@ def fetch_ssi_ohlcv(
                 }).dropna(subset=["Close"])
 
                 df = df.set_index("Time").sort_index()
+                df = df[~df.index.duplicated(keep="last")]
+
                 if symbol.upper() not in INDEX_SYMBOLS and not df.empty:
                     if df["Close"].median() > 500:
                         for col in ["Open", "High", "Low", "Close"]:
@@ -374,7 +368,7 @@ def fetch_batch_ohlcv_ssi(
     max_workers: int = 16,
     _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """Tải song song dữ liệu OHLCV cho danh sách nhiều mã cổ phiếu từ SSI."""
+    """Tải song song dữ liệu OHLCV từ SSI. Tham số _progress_cb có tiền tố '_' để bỏ qua hash cache."""
     unique_syms = sorted(list(set(symbols)))
     total = len(unique_syms)
     results: Dict[str, pd.DataFrame] = {}
