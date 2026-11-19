@@ -360,6 +360,11 @@ def fetch_ssi_ohlcv(
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+_BATCH_CACHE: Dict[tuple, tuple[float, Dict[str, pd.DataFrame]]] = {}
+_BATCH_CACHE_TTL = 900       # Lưu cache 15 phút
+_BATCH_CACHE_MAX_ITEMS = 8   # Giới hạn RAM cho Streamlit Cloud
+
+
 def fetch_batch_ohlcv_ssi(
     symbols: List[str],
     start_date: date,
@@ -368,13 +373,21 @@ def fetch_batch_ohlcv_ssi(
     max_workers: int = 16,
     _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """Tải song song dữ liệu OHLCV từ SSI. Tham số _progress_cb có tiền tố '_' để bỏ qua hash cache."""
+    """Tải song song dữ liệu OHLCV từ SSI kèm cache TTL (tránh lỗi CacheReplayClosureError)."""
     unique_syms = sorted(list(set(symbols)))
     total = len(unique_syms)
-    results: Dict[str, pd.DataFrame] = {}
     if total == 0:
-        return results
+        return {}
 
+    cache_key = (tuple(unique_syms), start_date, end_date, resolution)
+    now_ts = time.time()
+    cached = _BATCH_CACHE.get(cache_key)
+    if cached and (now_ts - cached[0]) < _BATCH_CACHE_TTL:
+        if _progress_cb:
+            _progress_cb(total, total)
+        return {k: v.copy() for k, v in cached[1].items()}
+
+    results: Dict[str, pd.DataFrame] = {}
     done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_map = {
@@ -393,4 +406,9 @@ def fetch_batch_ohlcv_ssi(
             if _progress_cb:
                 _progress_cb(done, total)
 
-    return results
+    if len(_BATCH_CACHE) >= _BATCH_CACHE_MAX_ITEMS:
+        oldest_key = min(_BATCH_CACHE, key=lambda k: _BATCH_CACHE[k][0])
+        _BATCH_CACHE.pop(oldest_key, None)
+
+    _BATCH_CACHE[cache_key] = (now_ts, results)
+    return {k: v.copy() for k, v in results.items()}
