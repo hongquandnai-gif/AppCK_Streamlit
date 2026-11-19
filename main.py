@@ -8,8 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pandas.tseries.offsets import DateOffset
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
@@ -41,7 +39,7 @@ from core.ssi_client import (
 )
 
 # ==============================================================================
-# 1. CẤU HÌNH TRANG & CSS CHUẨN V11 PRO
+# 1. CẤU HÌNH TRANG & CSS MODERN DASHBOARD V11 PRO
 # ==============================================================================
 st.set_page_config(
     page_title="V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket",
@@ -52,112 +50,277 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Khắc phục lỗi bị thanh header của Streamlit Cloud đè mất tiêu đề */
+    /* Nền tổng thể & căn lề chuẩn không bị thanh Cloud đè chữ */
+    .stApp {
+        background-color: #f1f5f9;
+    }
     .block-container {
-        padding-top: 3.3rem !important;
+        padding-top: 3.1rem !important;
         padding-bottom: 1.5rem !important;
         max-width: 98.5% !important;
     }
 
-    /* Thanh Top Header nền xanh đen chuẩn main_window.py */
+    /* Thanh Header V11 Pro tràn 100% chiều ngang */
     .v11-header {
-        background-color: #0f172a;
+        background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
         padding: 12px 20px;
-        border-radius: 10px 10px 0 0;
+        border-radius: 10px;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        border-bottom: 1px solid #1e293b;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
     }
     .v11-title {
         color: #38bdf8;
         font-size: 18px;
         font-weight: 800;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.4px;
         margin: 0;
     }
+    .v11-subtitle {
+        color: #94a3b8;
+        font-size: 12px;
+        font-weight: 500;
+        margin-left: 10px;
+    }
     .ws-badge-on {
-        background-color: #064e3b; color: #34d399; padding: 5px 14px;
-        border-radius: 999px; font-weight: 700; font-size: 13px;
-        border: 1px solid #059669;
+        background-color: rgba(16, 185, 129, 0.16);
+        color: #34d399;
+        padding: 5px 14px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12.5px;
+        border: 1px solid rgba(16, 185, 129, 0.45);
     }
     .ws-badge-off {
-        background-color: #7f1d1d; color: #fca5a5; padding: 5px 14px;
-        border-radius: 999px; font-weight: 700; font-size: 13px;
-        border: 1px solid #dc2626;
+        background-color: rgba(239, 68, 68, 0.16);
+        color: #fca5a5;
+        padding: 5px 14px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12.5px;
+        border: 1px solid rgba(239, 68, 68, 0.45);
     }
 
-    /* Thanh Navigation 5 Workspace dạng phẳng, bỏ nút tròn radio */
-    div[data-testid="stRadio"] > div[role="radiogroup"] {
-        background-color: #0f172a;
-        padding: 8px 16px 12px 16px;
-        border-radius: 0 0 10px 10px;
-        gap: 10px;
-        margin-top: -16px;
-        margin-bottom: 10px;
-    }
-    div[data-testid="stRadio"] label {
-        background-color: #1e293b;
-        color: #cbd5e1 !important;
-        padding: 8px 18px !important;
-        border-radius: 7px !important;
-        border: 1px solid #334155 !important;
-        cursor: pointer;
-        transition: all 0.15s ease;
-    }
-    div[data-testid="stRadio"] label:hover {
-        background-color: #334155;
-        color: #ffffff !important;
-    }
-    div[data-testid="stRadio"] label > div:first-child {
-        display: none !important;
-    }
-    div[data-testid="stRadio"] label:has(input:checked) {
+    /* Tinh chỉnh nút bấm hiện đại */
+    button[kind="primary"] {
         background-color: #0284c7 !important;
-        color: #ffffff !important;
-        border-color: #38bdf8 !important;
-    }
-    div[data-testid="stRadio"] label:has(input:checked) p {
+        border-color: #0284c7 !important;
         color: #ffffff !important;
         font-weight: 700 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 1px 2px rgba(2, 132, 199, 0.25);
     }
-    div[data-testid="stRadio"] label p {
-        color: inherit !important;
-        font-size: 14px !important;
-        margin: 0 !important;
+    button[kind="primary"]:hover {
+        background-color: #0369a1 !important;
+        border-color: #0369a1 !important;
+    }
+    button[kind="secondary"] {
+        background-color: #ffffff !important;
+        border: 1px solid #cbd5e1 !important;
+        color: #334155 !important;
+        font-weight: 600 !important;
+        border-radius: 8px !important;
+    }
+    button[kind="secondary"]:hover {
+        background-color: #e2e8f0 !important;
+        border-color: #94a3b8 !important;
+        color: #0f172a !important;
     }
 
     /* Thẻ KPI Cards */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
-        border: 1px solid #cbd5e1;
+        border: 1px solid #e2e8f0;
         border-left: 4px solid #0284c7;
-        padding: 10px 14px;
-        border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        padding: 12px 16px;
+        border-radius: 10px;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+    }
+    div[data-testid="stMetricLabel"] p {
+        font-size: 12.5px !important;
+        font-weight: 700 !important;
+        color: #64748b !important;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 22px !important;
+        font-weight: 800 !important;
+        color: #0f172a !important;
     }
 
-    /* Sub-tabs */
-    button[data-baseweb="tab"] {
-        font-weight: 600 !important;
+    /* Sub-tabs thanh thoát */
+    div[data-testid="stTabs"] button[data-baseweb="tab"] {
+        font-weight: 700 !important;
         font-size: 14px !important;
-        padding: 8px 16px !important;
+        padding: 8px 18px !important;
+        border-radius: 8px 8px 0 0 !important;
     }
 
-    /* Legend chip cho Treemap */
+    /* Khung bảng dữ liệu bo tròn */
+    div[data-testid="stDataFrame"] {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 4px;
+    }
+
+    /* Thanh chú thích 7 màu bản đồ nhiệt */
     .tm-legend-bar {
-        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-        margin: 6px 0 10px 0; font-size: 12px; font-weight: 700;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin: 6px 0 10px 0;
+        font-size: 12px;
+        font-weight: 700;
     }
     .tm-chip {
-        border-radius: 6px; padding: 3px 10px; color: #ffffff;
+        border-radius: 5px;
+        padding: 3px 10px;
+        color: #ffffff;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. HÀM TÔ MÀU BẢNG DỮ LIỆU ĐỒNG BỘ APP GỐC (KHÔNG DÙNG MATPLOTLIB)
+# 2. HELPER MÀU SẮC & BIỂU ĐỒ CHUẨN CHỨNG KHOÁN VN
 # ==============================================================================
+def get_vn_treemap_color(pct: float) -> str:
+    """7 mức màu tách biệt chuẩn bảng giá chứng khoán VN (khớp tab_overview.py)."""
+    if pct >= 6.5:
+        return "#9333ea"   # Tím trần
+    if pct >= 2.0:
+        return "#059669"   # Xanh lá đậm
+    if pct > 0.0:
+        return "#10b981"   # Xanh lá tươi
+    if pct == 0.0:
+        return "#d97706"   # Vàng tham chiếu (đủ độ tương phản cho chữ trắng)
+    if pct <= -6.5:
+        return "#0284c7"   # Xanh lơ sàn
+    if pct <= -2.0:
+        return "#dc2626"   # Đỏ đậm
+    return "#ef4444"       # Đỏ nhạt
+
+
+def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
+    """
+    Xây dựng Treemap dùng go.Treemap:
+    - Hiển thị chính xác 100% Mã + % thay đổi (tuyệt đối không còn +NaN%).
+    - Dùng 7 màu chứng khoán VN tách biệt, khung ngành màu xám đậm sang trọng.
+    - Hover tooltip đầy đủ tiếng Việt cho từng cổ phiếu và từng ngành.
+    """
+    ids, labels, parents, values, colors, texts, hovers = [], [], [], [], [], [], []
+
+    total_gtgd = float(df_tm["GTGD (Tỷ)"].sum())
+    mkt_avg_pct = (
+        float((df_tm["% Thay đổi"] * df_tm["GTGD (Tỷ)"]).sum() / total_gtgd)
+        if total_gtgd > 0 else 0.0
+    )
+
+    # Nút gốc HOSE (value = 0 theo chuẩn branchvalues="remainder")
+    ids.append("HOSE")
+    labels.append("HOSE")
+    parents.append("")
+    values.append(0.0)
+    colors.append("#0f172a")
+    texts.append(f"<b>HOSE ({mkt_avg_pct:+.2f}%) • Tổng GTGD: {total_gtgd:,.0f} Tỷ</b>")
+    hovers.append(
+        f"<b>Toàn sàn HOSE</b><br>"
+        f"Biến động BQ gia quyền: <b>{mkt_avg_pct:+.2f}%</b><br>"
+        f"Tổng GTGD: <b>{total_gtgd:,.1f} Tỷ VNĐ</b><br>"
+        f"Số mã khớp lệnh: {len(df_tm)}"
+    )
+
+    # Nhóm theo ngành
+    for ind, gdf in df_tm.groupby("Ngành"):
+        sec_gtgd = float(gdf["GTGD (Tỷ)"].sum())
+        if sec_gtgd <= 0:
+            continue
+        sec_pct = float((gdf["% Thay đổi"] * gdf["GTGD (Tỷ)"]).sum() / sec_gtgd)
+        sec_id = f"SEC_{ind}"
+
+        ids.append(sec_id)
+        labels.append(str(ind))
+        parents.append("HOSE")
+        values.append(0.0)
+        colors.append("#1e293b")
+        texts.append(f"<b>{ind}</b> ({sec_pct:+.2f}%)")
+        hovers.append(
+            f"<b>Ngành {ind}</b><br>"
+            f"Biến động BQ: <b>{sec_pct:+.2f}%</b><br>"
+            f"Tổng GTGD: <b>{sec_gtgd:,.1f} Tỷ VNĐ</b><br>"
+            f"Số mã: {len(gdf)}"
+        )
+
+        for row in gdf.itertuples():
+            sym = str(row.Mã)
+            pct = float(row._4)     # cột '% Thay đổi'
+            gtgd = float(row._3)    # cột 'GTGD (Tỷ)'
+            px_val = float(row.Giá)
+
+            ids.append(f"{sec_id}_{sym}")
+            labels.append(sym)
+            parents.append(sec_id)
+            values.append(gtgd)
+            colors.append(get_vn_treemap_color(pct))
+            texts.append(f"<b>{sym}</b><br>{pct:+.2f}%")
+            hovers.append(
+                f"<b>{sym}</b> ({ind})<br>"
+                f"Giá đóng cửa: <b>{px_val:,.2f}</b><br>"
+                f"Thay đổi: <b>{pct:+.2f}%</b><br>"
+                f"GTGD: <b>{gtgd:,.2f} Tỷ VNĐ</b>"
+            )
+
+    fig = go.Figure(
+        go.Treemap(
+            ids=ids,
+            labels=labels,
+            parents=parents,
+            values=values,
+            text=texts,
+            textinfo="text",
+            textposition="middle center",
+            hovertext=hovers,
+            hoverinfo="text",
+            marker=dict(
+                colors=colors,
+                line=dict(width=1.2, color="#ffffff"),
+                cornerradius=4,
+            ),
+            textfont=dict(color="#ffffff", size=13, family="Segoe UI, Arial, sans-serif"),
+            pathbar=dict(visible=False),
+            tiling=dict(packing="squarify", pad=3),
+        )
+    )
+    fig.update_layout(
+        height=700,
+        margin=dict(l=4, r=4, t=6, b=4),
+        paper_bgcolor="#ffffff",
+    )
+    return fig
+
+
+def _style_chart(fig: go.Figure, height: int = 500) -> go.Figure:
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        hovermode="x unified",
+        margin=dict(l=12, r=12, t=34, b=12),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(family="Segoe UI, Arial, sans-serif", size=12, color="#1e293b"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#f1f5f9", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0", zeroline=False)
+    return fig
+
+
 def _color_status(val):
     s = str(val).upper()
     if any(k in s for k in ["DẪN DẮT", "TRÊN", "ĐẠT (FULL)", "BUY", "CHUẨN", "CHỐT LỜI", "MUA THÊM", "GIAI ĐOẠN 2", "POWER PLAY"]):
@@ -195,10 +358,7 @@ def _color_pct_strength(val):
 
 def _color_pct_weak(val):
     try:
-        v = float(val)
-        if v >= 50:
-            return "color: #dc2626; font-weight: 700;"
-        return ""
+        return "color: #dc2626; font-weight: 700;" if float(val) >= 50 else ""
     except Exception:
         return ""
 
@@ -227,7 +387,7 @@ def _color_vol_score(val):
 
 
 # ==============================================================================
-# 3. KHỞI TẠO SSI WEBSOCKET & HEADER V11 PRO
+# 3. KHỞI TẠO SSI WEBSOCKET, HEADER & THANH 5 WORKSPACE PHẲNG (KHÔNG CHẤM TRÒN)
 # ==============================================================================
 ws_mgr = get_ssi_ws_manager()
 ssi_stocks_meta = fetch_ssi_stock_list("hose")
@@ -235,30 +395,45 @@ TODAY_VN = vn_today()
 vn_clock = vn_now().strftime("%d/%m/%Y %H:%M")
 
 badge_html = (
-    f'<span class="ws-badge-on">🟢 SSI WebSocket Connected ({len(ssi_stocks_meta)} mã HOSE) • {vn_clock}</span>'
+    f'<span class="ws-badge-on">🟢 SSI WebSocket Live ({len(ssi_stocks_meta)} mã HOSE) • {vn_clock}</span>'
     if ws_mgr.is_connected else
     f'<span class="ws-badge-off">🟡 SSI WebSocket Đang kết nối • {vn_clock}</span>'
 )
 
 st.markdown(f"""
 <div class="v11-header">
-    <div class="v11-title">📊 V11 PRO — Hệ Thống Phân Tích Định Lượng & SSI Realtime</div>
+    <div>
+        <span class="v11-title">📊 V11 PRO</span>
+        <span class="v11-subtitle">Hệ Thống Phân Tích Định Lượng Minervini & SSI Realtime</span>
+    </div>
     <div>{badge_html}</div>
 </div>
 """, unsafe_allow_html=True)
 
-workspace = st.radio(
-    "Workspace",
-    [
-        "🌐 Toàn Cảnh Thị Trường",
-        "🧭 Sóng Ngành & Dòng Tiền",
-        "🎯 Lọc Cổ Phiếu Đột Phá",
-        "📈 Phân Tích Biểu Đồ",
-        "💼 Danh Mục & Backtest",
-    ],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+WORKSPACES = [
+    "🌐 Toàn Cảnh Thị Trường",
+    "🧭 Sóng Ngành & Dòng Tiền",
+    "🎯 Lọc Cổ Phiếu Đột Phá",
+    "📈 Phân Tích Biểu Đồ",
+    "💼 Danh Mục & Backtest",
+]
+
+if "active_ws" not in st.session_state:
+    st.session_state["active_ws"] = WORKSPACES[0]
+
+nav_cols = st.columns(5, gap="small")
+for idx, ws_name in enumerate(WORKSPACES):
+    is_active = st.session_state["active_ws"] == ws_name
+    if nav_cols[idx].button(
+        ws_name,
+        key=f"nav_btn_{idx}",
+        type="primary" if is_active else "secondary",
+        width="stretch",
+    ):
+        st.session_state["active_ws"] = ws_name
+        st.rerun()
+
+workspace = st.session_state["active_ws"]
 
 
 # ==============================================================================
@@ -273,14 +448,14 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 
     # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP ---
     with t1:
-        c1, c2, c3 = st.columns([1.2, 2.2, 1.4], vertical_alignment="bottom")
+        c1, c2, c3, _ = st.columns([1.1, 2.2, 1.3, 1.4], vertical_alignment="bottom")
         idx_date = c1.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
         selected_indices = c2.multiselect(
             "Chọn chỉ số hiển thị",
             ["VNINDEX", "VN30", "HNX", "UPCOM"],
             default=["VNINDEX", "VN30", "HNX", "UPCOM"],
         )
-        if c3.button("🔄 Làm mới Intraday & WS", type="primary", width="stretch"):
+        if c3.button("🔄 Làm mới dữ liệu", type="primary", width="stretch"):
             ws_mgr.subscribe(selected_indices)
             st.cache_data.clear()
 
@@ -292,7 +467,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             fig_idx = make_subplots(
                 rows=2, cols=2,
                 subplot_titles=selected_indices[:4],
-                vertical_spacing=0.14, horizontal_spacing=0.08,
+                vertical_spacing=0.14, horizontal_spacing=0.07,
             )
 
             for i, sym in enumerate(selected_indices[:4]):
@@ -318,7 +493,6 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         last_px = float(df_day["Close"].iloc[-1])
                         vol = float(df_day["Volume"].sum())
 
-                        # Ưu tiên giá Realtime WebSocket nếu trùng ngày hôm nay
                         if actual_trade_date == TODAY_VN and sym in live_ticks and live_ticks[sym].get("last"):
                             last_px = float(live_ticks[sym]["last"])
                             if live_ticks[sym].get("volume"):
@@ -329,20 +503,19 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                             pct = (delta / prev_close) * 100.0
 
                         r_idx, c_idx = (i // 2) + 1, (i % 2) + 1
-                        line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#f59e0b")
+                        line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#d97706")
                         fig_idx.add_trace(
                             go.Scatter(
                                 x=df_day.index, y=df_day["Close"],
                                 mode="lines", name=sym,
                                 line=dict(color=line_col, width=2),
-                                fill="tozeroy" if prev_close is None else None,
                             ),
                             row=r_idx, col=c_idx,
                         )
                         if prev_close:
                             fig_idx.add_hline(
                                 y=prev_close, line_dash="dash", line_color="#64748b",
-                                row=r_idx, col=c_idx,
+                                line_width=1.2, row=r_idx, col=c_idx,
                             )
 
                 with cols_kpi[i]:
@@ -352,22 +525,23 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         delta=f"{delta:+.2f} ({pct:+.2f}%)",
                     )
 
-            fig_idx.update_layout(height=540, showlegend=False, margin=dict(l=20, r=20, t=40, b=20))
+            _style_chart(fig_idx, height=540)
+            fig_idx.update_layout(showlegend=False)
             st.plotly_chart(fig_idx, width="stretch")
 
     # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP ---
     with t2:
-        c1, c2 = st.columns([1.3, 1.5], vertical_alignment="bottom")
+        c1, c2, _ = st.columns([1.2, 1.5, 3.3], vertical_alignment="bottom")
         tm_date = c1.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
-        run_tm = c2.button("🗺️ Tạo Bản Đồ Nhiệt Dòng Tiền", type="primary", width="stretch")
+        run_tm = c2.button("🗺️ Tạo Bản Đồ Nhiệt", type="primary", width="stretch")
 
         st.markdown("""
         <div class="tm-legend-bar">
-            <span style="color:#334155;">Chú thích:</span>
+            <span style="color:#334155; margin-right:4px;">Chú thích màu:</span>
             <span class="tm-chip" style="background:#0284c7;">≤ −6.5% (Sàn)</span>
             <span class="tm-chip" style="background:#dc2626;">−6.5% ~ −2%</span>
             <span class="tm-chip" style="background:#ef4444;">−2% ~ 0%</span>
-            <span class="tm-chip" style="background:#f59e0b; color:#0f172a;">0% (TC)</span>
+            <span class="tm-chip" style="background:#d97706;">0% (TC)</span>
             <span class="tm-chip" style="background:#10b981;">0% ~ +2%</span>
             <span class="tm-chip" style="background:#059669;">+2% ~ +6.5%</span>
             <span class="tm-chip" style="background:#9333ea;">≥ +6.5% (Trần)</span>
@@ -394,7 +568,8 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         pct = (c_now - c_prev) / c_prev * 100.0
                         ind = "Penny" if is_penny_stock(sym) else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác")
                         rows_tm.append({
-                            "Mã": sym, "Ngành": ind,
+                            "Mã": sym,
+                            "Ngành": ind,
                             "GTGD (Tỷ)": round(c_now * vol / 1e6, 2),
                             "% Thay đổi": round(pct, 2),
                             "Giá": round(c_now, 2),
@@ -402,31 +577,16 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             st.session_state["tm_df"] = pd.DataFrame(rows_tm)
 
         if "tm_df" in st.session_state and not st.session_state["tm_df"].empty:
-            df_tm = st.session_state["tm_df"]
-            fig_tm = px.treemap(
-                df_tm,
-                path=[px.Constant("HOSE"), "Ngành", "Mã"],
-                values="GTGD (Tỷ)",
-                color="% Thay đổi",
-                range_color=[-7.0, 7.0],
-                color_continuous_scale=[
-                    (0.00, "#0284c7"),
-                    (0.15, "#dc2626"),
-                    (0.45, "#ef4444"),
-                    (0.50, "#f59e0b"),
-                    (0.55, "#10b981"),
-                    (0.85, "#059669"),
-                    (1.00, "#9333ea"),
-                ],
-                hover_data=["Giá", "% Thay đổi", "GTGD (Tỷ)"],
-            )
-            fig_tm.update_traces(texttemplate="<b>%{label}</b><br>%{color:+.2f}%", textposition="middle center")
-            fig_tm.update_layout(height=680, margin=dict(l=10, r=10, t=20, b=10))
+            fig_tm = build_vn_treemap(st.session_state["tm_df"])
             st.plotly_chart(fig_tm, width="stretch")
+        elif "tm_df" in st.session_state:
+            st.warning("Không có dữ liệu giao dịch trong ngày đã chọn.")
+        else:
+            st.info("Chọn ngày và nhấn **🗺️ Tạo Bản Đồ Nhiệt** để hiển thị dòng tiền toàn sàn.")
 
     # --- SUB-TAB 1.3: SỨC KHỎE & NGÀY PHÂN PHỐI ---
     with t3:
-        c1, c2, c3, c4, c5 = st.columns([1.2, 1, 1, 1, 1.5], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5, _ = st.columns([1.2, 0.9, 0.9, 0.9, 1.4, 0.7], vertical_alignment="bottom")
         ma_date = c1.date_input("Ngày phân tích", value=TODAY_VN, key="ma_date")
         dd_win = c2.number_input("Cửa sổ DD", 10, 60, 25)
         cancel_reb = c3.number_input("Xóa DD (%)", 3.0, 15.0, 6.0, step=0.5)
@@ -555,7 +715,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
 
     # --- SUB-TAB 2.1: XU HƯỚNG MA NGÀNH ---
     with t_ma:
-        c1, c2, c3, c4 = st.columns([2, 1.3, 1.3, 1.1], vertical_alignment="bottom")
+        c1, c2, c3, c4, _ = st.columns([1.8, 1.2, 1.3, 1.0, 1.2], vertical_alignment="bottom")
         ind_choice = c1.selectbox("Nhóm ngành", [g for g in INDUSTRY_GROUPS if g != "Chỉ số"], key="sec_ma_ind")
         ma_asof = c2.date_input("Ngày tra cứu", value=TODAY_VN, key="sec_ma_date")
         run_sec_ma = c3.button("🔄 Quét Xu Hướng MA", type="primary", width="stretch")
@@ -653,11 +813,11 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                     .map(_color_status, subset=ma_cols)
                     .format({"Giá": "{:,.2f}", "% Thay đổi": "{:+.2f}%"})
                 )
-            st.dataframe(styled, width="stretch", hide_index=True, height=560)
+            st.dataframe(styled, width="stretch", hide_index=True, height=580)
 
     # --- SUB-TAB 2.2: DÒNG TIỀN NGÀNH ---
     with t_mf:
-        c1, c2, c3, c4 = st.columns([1.2, 1, 1.6, 1.3], vertical_alignment="bottom")
+        c1, c2, c3, c4, _ = st.columns([1.2, 0.9, 1.6, 1.3, 1.0], vertical_alignment="bottom")
         mf_date = c1.date_input("Ngày kết thúc", value=TODAY_VN, key="mf_date")
         mf_days = c2.number_input("Số phiên", 3, 60, 10)
         mf_method = c3.selectbox("Phương pháp", ["ΔP × Vol (VNĐ)", "Signed TP × Vol (VNĐ)", "CMF × GTGD (VNĐ)"])
@@ -726,7 +886,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                     "% Giá TB": "{:+.2f}%",
                 })
             )
-            st.dataframe(styled_mf, width="stretch", hide_index=True, height=560)
+            st.dataframe(styled_mf, width="stretch", hide_index=True, height=580)
 
 
 # ==============================================================================
@@ -741,12 +901,16 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
     # --- SUB-TAB 3.1: RADAR EOD ---
     with t_radar:
-        c1, c2, c3, c4, c5, c6 = st.columns([0.9, 0.9, 1.2, 1.0, 1.5, 1.4], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5, c6 = st.columns([0.8, 0.8, 1.1, 0.9, 1.5, 1.3], vertical_alignment="bottom")
         ma_f = c1.number_input("MA Nhanh", 5, 50, 20)
         ma_m = c2.number_input("MA Trung", 20, 100, 50)
         min_v = c3.number_input("Min Vol", 0, 10_000_000, 100_000, step=50_000)
         use_ftd = c4.checkbox("Bật FTD", value=True)
-        ftd_mode = c5.selectbox("Chuẩn FTD", [0, 1], format_func=lambda x: "Nâng cao (Vol > MA20)" if x == 0 else "Tiêu chuẩn (Vol > Hôm trước)", disabled=not use_ftd)
+        ftd_mode = c5.selectbox(
+            "Chuẩn FTD", [0, 1],
+            format_func=lambda x: "Nâng cao (Vol > MA20)" if x == 0 else "Tiêu chuẩn (Vol > Hôm trước)",
+            disabled=not use_ftd,
+        )
         if c6.button("📡 Quét Thị Trường EOD", type="primary", width="stretch"):
             syms = get_symbols_by_industry("Tất cả ngành", exclude_penny=True) + ["VNINDEX"]
             prog = st.progress(0, text="Đang quét Radar EOD toàn sàn...")
@@ -849,11 +1013,11 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
     # --- SUB-TAB 3.2: MINERVINI & VCP PRO ---
     with t_min:
-        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1.6], vertical_alignment="bottom")
+        c1, c2, c3, c4, _ = st.columns([1.1, 1.1, 0.9, 1.6, 1.3], vertical_alignment="bottom")
         min_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="min_s")
         min_end = c2.date_input("Đến ngày", value=TODAY_VN, key="min_e")
         min_rs = c3.number_input("RS Min", 50, 99, 70)
-        if c4.button("🚀 Quét Siêu Cổ Phiếu Minervini & VCP", type="primary", width="stretch"):
+        if c4.button("🚀 Quét Siêu Cổ Phiếu Minervini", type="primary", width="stretch"):
             syms = get_symbols_by_industry("Tất cả ngành", exclude_penny=True)
             prog = st.progress(0, text="Đang tải dữ liệu và tính RS Rating toàn sàn...")
             raw_m = fetch_batch_ohlcv_ssi(
@@ -873,7 +1037,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
             if not df_breadth.empty:
                 lb = df_breadth.iloc[-1]
-                p200, pbot, avgp = float(lb["Pct_Above_MA200"]), float(lb["Pct_Bottoming"]), float(lb["Avg_Price"])
+                p200, pbot = float(lb["Pct_Above_MA200"]), float(lb["Pct_Bottoming"])
                 if p200 >= 50:
                     st.success(f"🟢 **UPTREND XÁC NHẬN** ({p200:.1f}% cổ phiếu > MA200)")
                 elif p200 <= 20:
@@ -904,7 +1068,8 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 if proc_map:
                     default_sym = screened[0]["Mã CP"] if screened else sorted(list(proc_map.keys()))[0]
                     all_m_syms = sorted(list(proc_map.keys()))
-                    diag_sym = st.selectbox("Chọn cổ phiếu kiểm tra", all_m_syms, index=all_m_syms.index(default_sym))
+                    sc_sel, _ = st.columns([1.2, 4.8])
+                    diag_sym = sc_sel.selectbox("Chọn cổ phiếu kiểm tra", all_m_syms, index=all_m_syms.index(default_sym))
                     df_d = proc_map[diag_sym]
                     latest = df_d.iloc[-1].to_dict()
                     p_title, p_col, p_desc = evaluate_stock_phase(latest)
@@ -912,8 +1077,12 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
                     col_info, col_chart = st.columns([1.2, 2.8])
                     with col_info:
-                        st.markdown(f"<div style='padding:10px; border-left:4px solid {p_col}; background:#ffffff; border-radius:6px;'>"
-                                    f"<b style='color:{p_col}; font-size:15px;'>{p_title}</b><br>{p_desc}</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div style='padding:12px; border-left:4px solid {p_col}; background:#ffffff; "
+                            f"border-radius:8px; border:1px solid #e2e8f0; border-left-width:4px;'>"
+                            f"<b style='color:{p_col}; font-size:15px;'>{p_title}</b><br>{p_desc}</div>",
+                            unsafe_allow_html=True,
+                        )
                         if vcp:
                             st.success(f"**VCP {vcp['num_contractions']}T:** {' -> '.join([str(x)+'%' for x in vcp['ranges']])}\n\n**Pivot:** `{vcp['buy_point']:,.2f}` ({vcp['status']})")
                         c_val = latest["Close"]
@@ -938,7 +1107,8 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                             fig_vcp.add_trace(go.Scatter(x=sub_p.index, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.5)))
                         if vcp:
                             fig_vcp.add_hline(y=vcp["buy_point"], line_dash="dot", line_color="#7c3aed", annotation_text=f"Pivot: {vcp['buy_point']:,.2f}")
-                        fig_vcp.update_layout(height=460, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
+                        _style_chart(fig_vcp, height=460)
+                        fig_vcp.update_layout(xaxis_rangeslider_visible=False)
                         st.plotly_chart(fig_vcp, width="stretch")
 
             with st3:
@@ -956,12 +1126,12 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     fig_br.add_trace(go.Scatter(x=df_breadth.index, y=df_breadth["Pct_Bottoming"], name="% Dò đáy 52T", line=dict(color="#8b5cf6", dash="dot")), secondary_y=True)
                     fig_br.add_hline(y=20, line_dash="dash", line_color="#ef4444", secondary_y=True)
                     fig_br.add_hline(y=50, line_dash="dash", line_color="#94a3b8", secondary_y=True)
-                    fig_br.update_layout(height=420, margin=dict(l=10, r=10, t=25, b=10))
+                    _style_chart(fig_br, height=420)
                     st.plotly_chart(fig_br, width="stretch")
 
     # --- SUB-TAB 3.3: LỌC CP TĂNG MẠNH ---
     with t_gain:
-        c1, c2, c3, c4, c5, c6 = st.columns([1.1, 1.1, 1.4, 0.8, 1.5, 1.2], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5, c6 = st.columns([1.0, 1.0, 1.3, 0.7, 1.5, 1.1], vertical_alignment="bottom")
         g_start = c1.date_input("Từ ngày", value=TODAY_VN - timedelta(days=30), key="g_s")
         g_end = c2.date_input("Đến ngày", value=TODAY_VN, key="g_e")
         g_ind = c3.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="g_ind")
@@ -1015,7 +1185,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     "Biên Độ (H/L)": "{:.2f}%",
                 })
             )
-            st.dataframe(styled_g, width="stretch", hide_index=True, height=520)
+            st.dataframe(styled_g, width="stretch", hide_index=True, height=540)
 
 
 # ==============================================================================
@@ -1025,7 +1195,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
     t_eod, t_intra = st.tabs(["📉 Biểu Đồ Kỹ Thuật (EOD)", "⚡ Khớp Lệnh Trong Phiên & Bảng Giá SSI"])
 
     with t_eod:
-        c1, c2, c3, c4, c5 = st.columns([1.4, 1.1, 1.1, 1.1, 1.0], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5 = st.columns([1.4, 1.0, 1.1, 1.1, 1.0], vertical_alignment="bottom")
         ind_sel = c1.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="hist_ind")
         sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
         sym_sel = c2.selectbox("Mã cổ phiếu", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
@@ -1033,7 +1203,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
         h_end = c4.date_input("Đến ngày", value=TODAY_VN, key="h_e")
         h_tf = c5.selectbox("Khung", ["1 Ngày", "1 Tuần", "1 Tháng"])
 
-        o1, o2, o3, o4 = st.columns([2.2, 1.2, 1.2, 1.4], vertical_alignment="bottom")
+        o1, o2, o3, o4 = st.columns([2.2, 1.2, 1.0, 1.4], vertical_alignment="bottom")
         ma_sel = o1.multiselect("Đường MA", [10, 20, 50, 100, 200], default=[10, 20, 50])
         custom_ma_txt = o2.text_input("Custom MA", placeholder="vd: 5, 15")
         show_ma_vol = o3.checkbox("MA20 Vol", value=True)
@@ -1087,12 +1257,13 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                 if show_ma_vol:
                     fig_c.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA20_Vol"], name="MA20 Vol", line=dict(color="#d946ef", width=1.3)), row=2, col=1)
 
-                fig_c.update_layout(height=620, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=25, b=10))
+                _style_chart(fig_c, height=620)
+                fig_c.update_layout(xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig_c, width="stretch")
 
     with t_intra:
-        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.1, 1.1], vertical_alignment="bottom")
-        in_sym = c1.text_input("Nhập mã cổ phiếu", value="FPT").strip().upper()
+        c1, c2, c3, c4, _ = st.columns([1.1, 1.1, 1.0, 1.0, 1.8], vertical_alignment="bottom")
+        in_sym = c1.text_input("Mã cổ phiếu", value="FPT").strip().upper()
         in_date = c2.date_input("Ngày khớp lệnh", value=TODAY_VN, key="in_date")
         in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "30", "60"], format_func=lambda x: f"{x} phút")
         c4.button("🔄 Cập nhật", type="primary", width="stretch", key="btn_intra_ref")
@@ -1128,7 +1299,8 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                     )
                     v_cols = ["#10b981" if c >= o else "#ef4444" for c, o in zip(df_in["Close"], df_in["Open"])]
                     fig_in.add_trace(go.Bar(x=df_in.index, y=df_in["Volume"], marker_color=v_cols, name="Vol"), row=2, col=1)
-                    fig_in.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
+                    _style_chart(fig_in, height=500)
+                    fig_in.update_layout(xaxis_rangeslider_visible=False)
                     st.plotly_chart(fig_in, width="stretch")
             else:
                 st.info("Chưa có dữ liệu khớp lệnh trong ngày đã chọn.")
@@ -1146,8 +1318,7 @@ elif workspace == "💼 Danh Mục & Backtest":
         if "portfolio_data" not in st.session_state:
             st.session_state["portfolio_data"] = json.loads(port_file.read_text(encoding="utf-8")) if port_file.exists() else []
 
-        # Thanh công cụ Import/Export JSON + Tiền mặt (an toàn trên Streamlit Cloud)
-        pc1, pc2, pc3, pc4 = st.columns([1.8, 1.5, 1.2, 1.2], vertical_alignment="bottom")
+        pc1, pc2, pc3, pc4, _ = st.columns([1.6, 1.6, 1.0, 1.0, 0.8], vertical_alignment="bottom")
         cash_vnd = pc1.number_input("Tiền mặt khả dụng (VNĐ)", 0.0, 1e12, 0.0, step=10_000_000.0)
         up_json = pc2.file_uploader("Nhập portfolio.json", type=["json"], label_visibility="collapsed")
         if up_json is not None:
@@ -1400,7 +1571,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                 if not climax_df.empty:
                     fig_eq.add_trace(go.Scatter(x=climax_df.index, y=[90] * len(climax_df), mode="markers", name="Đỉnh Hưng Phấn", marker=dict(color="#8b5cf6", size=6)), row=2, col=1)
 
-                fig_eq.update_layout(height=470, margin=dict(l=10, r=10, t=25, b=10))
+                _style_chart(fig_eq, height=470)
                 st.plotly_chart(fig_eq, width="stretch")
 
                 sub_t1, sub_t2, sub_t3 = st.tabs(["📝 Sổ Lệnh Chi Tiết", "✅ Deal Đã Đóng", "📊 Lịch Sử Tài Sản"])
