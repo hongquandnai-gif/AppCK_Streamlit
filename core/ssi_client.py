@@ -59,7 +59,7 @@ SSI_INDEX_ALIASES: Dict[str, List[str]] = {
     "VNSML": ["VNSML", "VNSmallcap", "VNSMALL"],
 }
 
-# Fallback VNDirect cho các chỉ số nếu SSI thiếu nến lịch sử/intraday
+# Ánh xạ sang mã chuẩn trên VNDirect dchart
 VNDIRECT_INDEX_MAP: Dict[str, str] = {
     "VNINDEX": "VNINDEX",
     "VN30": "VN30",
@@ -71,6 +71,9 @@ VNDIRECT_INDEX_MAP: Dict[str, str] = {
     "VNSMALL": "VNSML",
     "VNSML": "VNSML",
 }
+
+# Các chỉ số bị SSI chart API chia 1000 & làm tròn mất độ chính xác -> ưu tiên lấy từ VNDirect
+VNDIRECT_FIRST_INDICES = {"VNMID", "VNSMALL", "VNSML"}
 
 # Ánh xạ ngược từ mã WebSocket SSI trả về sang tên chuẩn của App
 WS_INDEX_CANONICAL_MIRROR: Dict[str, List[str]] = {
@@ -259,10 +262,17 @@ class SSIWebSocketManager:
 
         last_f = float(raw_last)
         last_val = last_f / div if (last_f > 500 and not is_idx) else last_f
+
+        # Chặn dữ liệu chỉ số bị chia nhầm 1000 (VD: VNMID=1.82 thay vì 1820)
+        if is_idx and last_val < 50.0:
+            return
+
         ref_val = None
         if raw_ref is not None:
             ref_f = float(raw_ref)
             ref_val = ref_f / div if (ref_f > 500 and not is_idx) else ref_f
+            if is_idx and ref_val < 50.0:
+                ref_val = None
 
         with self._lock:
             prev = self._live_ticks.get(sym, {})
@@ -304,6 +314,8 @@ class SSIWebSocketManager:
                     continue
             if nums:
                 last_val = nums[0] / div if (nums[0] > 500 and not is_idx) else nums[0]
+                if is_idx and last_val < 50.0:
+                    return
                 with self._lock:
                     prev = self._live_ticks.get(sym, {})
                     ref_val = prev.get("ref")
@@ -378,12 +390,36 @@ def _parse_tv_payload(data: dict, symbol: str) -> pd.DataFrame:
 
     df = df.set_index("Time").sort_index()
     df = df[~df.index.duplicated(keep="last")]
+    if df.empty:
+        return df
 
-    if symbol.upper() not in ALL_INDEX_SYMBOLS and not df.empty:
-        if df["Close"].median() > 500:
-            for col in ["Open", "High", "Low", "Close"]:
-                df[col] = df[col] / 1000.0
+    sym_u = symbol.upper()
+    if sym_u in ALL_INDEX_SYMBOLS:
+        # Từ chối dữ liệu chỉ số bị API chia nhầm 1000 (VD: VNMID=1.82, VNSML=1.18)
+        if float(df["Close"].median()) < 50.0:
+            return pd.DataFrame()
+    elif float(df["Close"].median()) > 500.0:
+        for col in ["Open", "High", "Low", "Close"]:
+            df[col] = df[col] / 1000.0
+
     return df
+
+
+def _fetch_vndirect_ohlcv(sym_u: str, resolution: str, t_from: int, t_to: int) -> pd.DataFrame:
+    vnd_sym = VNDIRECT_INDEX_MAP.get(sym_u)
+    if not vnd_sym:
+        return pd.DataFrame()
+    vnd_url = (
+        f"https://dchart-api.vndirect.com.vn/dchart/history"
+        f"?symbol={vnd_sym}&resolution={resolution}&from={t_from}&to={t_to}"
+    )
+    try:
+        resp = requests.get(vnd_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        if resp.status_code == 200:
+            return _parse_tv_payload(resp.json(), sym_u)
+    except Exception:
+        pass
+    return pd.DataFrame()
 
 
 def fetch_ssi_ohlcv(
@@ -393,13 +429,19 @@ def fetch_ssi_ohlcv(
     resolution: str = "D",
 ) -> pd.DataFrame:
     """
-    Lấy dữ liệu nến OHLCV từ SSI iBoard (hỗ trợ alias cho HNX, UPCOM, VNMID, VNSMALL).
-    Tự động fallback sang VNDirect dchart nếu SSI không có lịch sử cho chỉ số phụ.
+    Lấy nến OHLCV:
+    - VNMID / VNSMALL ưu tiên VNDirect dchart để giữ nguyên điểm chính xác (1,8xx / 1,1xx).
+    - Các mã & chỉ số khác ưu tiên SSI iBoard, tự động fallback VNDirect nếu dữ liệu lỗi.
     """
     sym_u = symbol.upper().strip()
     dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
     dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
     t_from, t_to = int(dt_from.timestamp()), int(dt_to.timestamp())
+
+    if sym_u in VNDIRECT_FIRST_INDICES:
+        df_vnd = _fetch_vndirect_ohlcv(sym_u, resolution, t_from, t_to)
+        if not df_vnd.empty:
+            return df_vnd
 
     candidates = SSI_INDEX_ALIASES.get(sym_u, [sym_u])
     if sym_u in _RESOLVED_SSI_SYMBOL:
@@ -423,21 +465,10 @@ def fetch_ssi_ohlcv(
         except Exception:
             continue
 
-    # Fallback VNDirect cho các chỉ số (HNX, UPCOM, VNMID, VNSMALL)
-    if sym_u in VNDIRECT_INDEX_MAP:
-        vnd_sym = VNDIRECT_INDEX_MAP[sym_u]
-        vnd_url = (
-            f"https://dchart-api.vndirect.com.vn/dchart/history"
-            f"?symbol={vnd_sym}&resolution={resolution}&from={t_from}&to={t_to}"
-        )
-        try:
-            resp = requests.get(vnd_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
-            if resp.status_code == 200:
-                df = _parse_tv_payload(resp.json(), sym_u)
-                if not df.empty:
-                    return df
-        except Exception:
-            pass
+    if sym_u in VNDIRECT_INDEX_MAP and sym_u not in VNDIRECT_FIRST_INDICES:
+        df_vnd = _fetch_vndirect_ohlcv(sym_u, resolution, t_from, t_to)
+        if not df_vnd.empty:
+            return df_vnd
 
     return pd.DataFrame()
 
