@@ -213,7 +213,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             prog = st.progress(0, text="Đang tải dữ liệu toàn sàn từ SSI...")
             raw_map = fetch_batch_ohlcv_ssi(
                 all_syms, tm_date - timedelta(days=10), tm_date, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
 
@@ -282,7 +282,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                 prog = st.progress(0, text="Đang quét sức mạnh các nhóm ngành...")
                 sec_dfs = fetch_batch_ohlcv_ssi(
                     syms, ma_date - timedelta(days=150), ma_date, "D",
-                    progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                    _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
                 )
                 prog.empty()
 
@@ -333,7 +333,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
             prog = st.progress(0)
             dfs = fetch_batch_ohlcv_ssi(
                 syms, ma_asof - timedelta(days=400), ma_asof, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
 
@@ -386,7 +386,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
             prog = st.progress(0)
             dfs = fetch_batch_ohlcv_ssi(
                 syms, mf_date - timedelta(days=int(mf_days) * 2 + 15), mf_date, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
 
@@ -456,7 +456,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             prog = st.progress(0)
             dfs = fetch_batch_ohlcv_ssi(
                 syms, TODAY_VN - timedelta(days=350), TODAY_VN, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
 
@@ -513,7 +513,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             prog = st.progress(0, text="Đang tải dữ liệu và tính RS Rating toàn sàn...")
             raw_m = fetch_batch_ohlcv_ssi(
                 syms, min_start - timedelta(days=450), min_end, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
             proc_map, screened, df_breadth = run_minervini_screener(raw_m, min_start, min_end, int(min_rs))
@@ -585,7 +585,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             prog = st.progress(0)
             dfs = fetch_batch_ohlcv_ssi(
                 syms, g_start - timedelta(days=7), g_end, "D",
-                progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
             )
             prog.empty()
             g_rows = []
@@ -818,7 +818,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                 prog = st.progress(0, text="Đang tải dữ liệu lịch sử toàn sàn từ SSI...")
                 raw_bt = fetch_batch_ohlcv_ssi(
                     fetch_syms, bt_start - timedelta(days=450), bt_end, "D",
-                    progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                    _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
                 )
                 prog.empty()
 
