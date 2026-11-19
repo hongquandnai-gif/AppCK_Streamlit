@@ -372,7 +372,7 @@ def fetch_batch_ohlcv_ssi(
     end_date: date,
     resolution: str = "D",
     max_workers: int = 16,
-    progress_cb: Optional[Callable[[int, int], None]] = None,
+    _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Tải song song dữ liệu OHLCV cho danh sách nhiều mã cổ phiếu từ SSI."""
     unique_syms = sorted(list(set(symbols)))
@@ -396,7 +396,7 @@ def fetch_batch_ohlcv_ssi(
             except Exception:
                 pass
             done += 1
-            if progress_cb:
-                progress_cb(done, total)
+            if _progress_cb:
+                _progress_cb(done, total)
 
     return results
