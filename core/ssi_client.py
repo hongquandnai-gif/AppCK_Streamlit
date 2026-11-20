@@ -128,10 +128,7 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
 
 
 def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
-    """
-    Lấy snapshot toàn bộ bảng giá hiện tại của sàn từ SSI iBoard (1 request duy nhất ~0.3s)
-    dùng làm dữ liệu nền tức thì cho Bản đồ nhiệt Realtime.
-    """
+    """Lấy snapshot toàn bộ bảng giá hiện tại từ SSI iBoard làm nền cho Treemap Realtime."""
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
     board: Dict[str, dict] = {}
     try:
@@ -170,7 +167,6 @@ class SSIWebSocketManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._live_ticks: Dict[str, dict] = {}
-        # Lưu chuỗi điểm theo từng phút trong ngày: {sym: {datetime_minute: {'Open','High','Low','Close','Volume'}}}
         self._minute_bars: Dict[str, Dict[datetime, dict]] = {}
         self._bar_date: date = vn_today()
         self._subscribed: set[str] = set()
@@ -223,7 +219,6 @@ class SSIWebSocketManager:
             stock_syms = [s for s in symbols if s not in ALL_INDEX_SYMBOLS]
             idx_syms = [s for s in symbols if s in ALL_INDEX_SYMBOLS]
 
-            # Chia nhỏ gói đăng ký cổ phiếu (mỗi gói tối đa 150 mã để SSI Pushstream không từ chối)
             for i in range(0, len(stock_syms), 150):
                 chunk = stock_syms[i:i + 150]
                 msg_stock = {
@@ -279,7 +274,6 @@ class SSIWebSocketManager:
             self._minute_bars.clear()
             self._bar_date = today_d
 
-        # Làm tròn về mốc phút (naive Asia/Ho_Chi_Minh) để nối liền mạch với dữ liệu nến 1 phút
         minute_ts = now_dt.replace(second=0, microsecond=0, tzinfo=None)
         px = float(tick_obj["last"])
         vol = float(tick_obj.get("volume") or 0.0)
@@ -423,7 +417,6 @@ class SSIWebSocketManager:
             return {s: dict(self._live_ticks[s]) for s in symbols if s in self._live_ticks}
 
     def get_minute_bars_df(self, symbol: str) -> pd.DataFrame:
-        """Trả về DataFrame các phút tích lũy từ WebSocket trong ngày hôm nay để nối liền biểu đồ."""
         sym_u = symbol.upper().strip()
         with self._lock:
             if self._bar_date != vn_today() or sym_u not in self._minute_bars:
@@ -439,7 +432,6 @@ class SSIWebSocketManager:
 @st.cache_resource
 def get_ssi_ws_manager() -> SSIWebSocketManager:
     mgr = SSIWebSocketManager()
-    # Đăng ký sẵn các chỉ số + toàn bộ mã HOSE để Treemap và Biểu đồ nhận realtime ngay lập tức
     hose_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
     mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"] + hose_syms)
     return mgr
