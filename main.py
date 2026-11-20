@@ -58,7 +58,7 @@ st.markdown("""
     }
     .block-container {
         padding-top: 3.1rem !important;
-        padding-bottom: 1.5rem !important;
+        padding-bottom: 2.5rem !important;
         max-width: 98.5% !important;
     }
 
@@ -194,6 +194,13 @@ st.markdown("""
 # 2. HELPER BIỂU ĐỒ, LỌC NGÀY/GIỜ NGHỈ, LIVE CANDLE, DYNAMIC OHLC & MÀU SẮC
 # ==============================================================================
 ALL_MAIN_INDICES = ["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"]
+
+
+def _auto_df_height(df: pd.DataFrame, row_px: int = 35, header_px: int = 38) -> int:
+    """Tự động giãn chiều cao bảng theo đúng số dòng để cuộn mượt toàn trang (bỏ khung cuộn cụt)."""
+    if df is None or df.empty:
+        return 120
+    return int(len(df) * row_px + header_px + 4)
 
 
 def get_vn_treemap_color(pct: float) -> str:
@@ -910,7 +917,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         .map(_color_status, subset=["Cảnh báo"])
                         .format({"% > MA20": "{:.1f}%", "Trước đó": "{:.1f}%", "Thay đổi": "{:+.1f}%"})
                     )
-                    st.dataframe(styled_l, width="stretch", hide_index=True)
+                    st.dataframe(styled_l, width="stretch", hide_index=True, height=_auto_df_height(df_l))
                 else:
                     st.caption("Không có nhóm ngành nào đạt chuẩn dẫn dắt.")
             with col_w:
@@ -922,7 +929,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         .map(_color_pct_weak, subset=["% < MA50"])
                         .format({"% < MA50": "{:.1f}%"})
                     )
-                    st.dataframe(styled_w, width="stretch", hide_index=True)
+                    st.dataframe(styled_w, width="stretch", hide_index=True, height=_auto_df_height(df_w))
                 else:
                     st.caption("Không có nhóm ngành nào suy yếu > 50%.")
 
@@ -1033,7 +1040,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                     .map(_color_status, subset=ma_cols)
                     .format({"Giá": "{:,.2f}", "% Thay đổi": "{:+.2f}%"})
                 )
-            st.dataframe(styled, width="stretch", hide_index=True, height=580)
+            st.dataframe(styled, width="stretch", hide_index=True, height=_auto_df_height(df_show))
 
     # --- SUB-TAB 2.2: DÒNG TIỀN NGÀNH ---
     with t_mf:
@@ -1106,7 +1113,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                     "% Giá TB": "{:+.2f}%",
                 })
             )
-            st.dataframe(styled_mf, width="stretch", hide_index=True, height=580)
+            st.dataframe(styled_mf, width="stretch", hide_index=True, height=_auto_df_height(df_mf))
 
 
 # ==============================================================================
@@ -1218,7 +1225,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 if not rr["sec"].empty:
                     st.dataframe(
                         rr["sec"].style.map(_color_pct_strength, subset=["Sức Mạnh"]).format({"Sức Mạnh": "{:.1f}%"}),
-                        width="stretch", hide_index=True, height=500,
+                        width="stretch", hide_index=True, height=_auto_df_height(rr["sec"]),
                     )
             with col_s2:
                 st.markdown("#### 🚀 Top Cổ Phiếu Nổi Bật")
@@ -1228,7 +1235,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         .map(_color_vol_score, subset=["Hệ Số Vol"])
                         .map(_color_status, subset=["Tín Hiệu"])
                         .format({"Giá": "{:,.2f}", "Volume": "{:,.0f}", "Hệ Số Vol": "{:.2f}x"}),
-                        width="stretch", hide_index=True, height=500,
+                        width="stretch", hide_index=True, height=_auto_df_height(rr["stk"]),
                     )
 
     # --- SUB-TAB 3.2: MINERVINI & VCP PRO ---
@@ -1280,7 +1287,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         .map(_color_status, subset=["Chu Kỳ", "Trạng Thái Pivot"])
                         .format({"Giá": "{:,.2f}", "% Đỉnh 52T": "{:+.1f}%", "Pivot": "{:,.2f}"}, na_rep="—")
                     )
-                    st.dataframe(styled_sc, width="stretch", hide_index=True, height=520)
+                    st.dataframe(styled_sc, width="stretch", hide_index=True, height=_auto_df_height(df_sc))
                 else:
                     st.info("Không có mã nào thỏa mãn toàn bộ 8 tiêu chí Trend Template ở thời điểm này.")
 
@@ -1413,7 +1420,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     "Biên Độ (H/L)": "{:.2f}%",
                 })
             )
-            st.dataframe(styled_g, width="stretch", hide_index=True, height=540)
+            st.dataframe(styled_g, width="stretch", hide_index=True, height=_auto_df_height(df_g_show))
 
 
 # ==============================================================================
@@ -1740,7 +1747,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                     "Hôm nay (VNĐ)": "{:+,.0f}", "Tỷ trọng (%)": "{:.2f}%",
                 })
             )
-            st.dataframe(styled_p, width="stretch", hide_index=True)
+            st.dataframe(styled_p, width="stretch", hide_index=True, height=_auto_df_height(df_p))
 
         @st.fragment(run_every=5)
         def _portfolio_live_fragment():
@@ -1880,7 +1887,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                             .map(_color_status, subset=["Lệnh"])
                             .map(_color_signed, subset=["Lãi/Lỗ"])
                             .format({"Giá": "{:,.2f}", "KL": "{:,.0f}", "Lãi/Lỗ": "{:+,.0f}"}),
-                            width="stretch", hide_index=True, height=360,
+                            width="stretch", hide_index=True, height=_auto_df_height(df_tr),
                         )
                 with sub_t2:
                     df_cl = res["closed"].iloc[::-1] if not res["closed"].empty else pd.DataFrame()
@@ -1889,7 +1896,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                             df_cl.style
                             .map(_color_signed, subset=["Lãi/Lỗ", "% Lãi/Lỗ"])
                             .format({"Giá Mua": "{:,.2f}", "Giá Bán": "{:,.2f}", "KL": "{:,.0f}", "Lãi/Lỗ": "{:+,.0f}", "% Lãi/Lỗ": "{:+.2f}%"}),
-                            width="stretch", hide_index=True, height=360,
+                            width="stretch", hide_index=True, height=_auto_df_height(df_cl),
                         )
                 with sub_t3:
                     df_sn = res["snapshots"].iloc[::-1] if not res["snapshots"].empty else pd.DataFrame()
@@ -1900,5 +1907,5 @@ elif workspace == "💼 Danh Mục & Backtest":
                                 "Tiền Chờ Về": "{:,.0f}", "Giá Trị CP": "{:,.0f}",
                                 "Risk Score": "{:.1f}", "% > MA200": "{:.1f}%",
                             }),
-                            width="stretch", hide_index=True, height=360,
+                            width="stretch", hide_index=True, height=_auto_df_height(df_sn),
                         )
