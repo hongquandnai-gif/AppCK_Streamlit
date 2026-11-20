@@ -35,7 +35,6 @@ from core.ssi_client import (
     clear_batch_cache,
     fetch_batch_ohlcv_ssi,
     fetch_ssi_ohlcv_cached,
-    fetch_ssi_realtime_board,
     fetch_ssi_stock_list,
     get_ssi_ws_manager,
     vn_now,
@@ -43,7 +42,7 @@ from core.ssi_client import (
 )
 
 # ==============================================================================
-# 1. CẤU HÌNH TRANG & CSS MODERN DASHBOARD V11 PRO
+# 1. CẤU HÌNH TRANG & CSS MODERN DASHBOARD V11 PRO (CHỐNG GIẬT MỜ LIVE)
 # ==============================================================================
 st.set_page_config(
     page_title="V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket",
@@ -54,6 +53,19 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* Tắt hoàn toàn hiệu ứng giật mờ (dimming) khi fragment cập nhật Live */
+    [data-stale="true"],
+    div[data-stale="true"],
+    div[data-testid="element-container"][data-stale="true"],
+    div[data-testid="stVerticalBlock"][data-stale="true"] {
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+    }
+    div[data-testid="stStatusWidget"] {
+        visibility: hidden !important;
+    }
+
     .stApp {
         background-color: #f1f5f9;
     }
@@ -198,7 +210,7 @@ ALL_MAIN_INDICES = ["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"]
 
 
 def _auto_df_height(df: pd.DataFrame, row_px: int = 35, header_px: int = 38) -> int:
-    """Tự động giãn chiều cao bảng theo đúng số dòng để cuộn mượt toàn trang (bỏ khung cuộn cụt)."""
+    """Tự động giãn chiều cao bảng theo đúng số dòng để cuộn mượt toàn trang."""
     if df is None or df.empty:
         return 120
     return int(len(df) * row_px + header_px + 4)
@@ -664,7 +676,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         "🩺 Sức Khỏe & Ngày Phân Phối",
     ])
 
-    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP (6 CHỈ SỐ LIỀN MẠCH + KHÔNG GIẬT) ---
+    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP (ĐỌC TỪ RAM NỀN - KHÔNG GIẬT MỜ) ---
     with t1:
         c1, c2, c3 = st.columns([1.1, 3.6, 1.2], vertical_alignment="bottom")
         idx_date = c1.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
@@ -675,6 +687,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         )
         if c3.button("🔄 Làm mới ngay", type="primary", width="stretch"):
             ws_mgr.subscribe(selected_indices)
+            ws_mgr.refresh_indices_now(selected_indices)
             st.cache_data.clear()
 
         def _render_indices_live_body():
@@ -683,6 +696,8 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                 return
 
             ws_mgr.subscribe(selected_indices)
+            if idx_date == TODAY_VN:
+                ws_mgr.ensure_indices_loaded(selected_indices)
             live_ticks = ws_mgr.get_snapshot(selected_indices)
 
             n_sel = len(selected_indices)
@@ -697,8 +712,11 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             )
 
             for i, sym in enumerate(selected_indices):
-                df_1m = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=6), idx_date, "1")
-                df_d = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=25), idx_date, "D")
+                if idx_date == TODAY_VN:
+                    df_1m, df_d = ws_mgr.get_index_data(sym)
+                else:
+                    df_1m = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=6), idx_date, "1")
+                    df_d = fetch_ssi_ohlcv_cached(sym, idx_date - timedelta(days=25), idx_date, "D")
 
                 last_px = delta = pct = vol = 0.0
                 trade_date_str = idx_date.strftime("%d/%m")
@@ -789,12 +807,12 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         else:
             _render_indices_live_body()
 
-    # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP (REALTIME WEBSOCKET) ---
+    # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP (ĐỒNG BỘ REALTIME LIÊN TỤC 5S) ---
     with t2:
         c1, c2, c3, _ = st.columns([1.2, 1.4, 1.3, 2.1], vertical_alignment="bottom")
         tm_date = c1.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
         tm_size_mode = c2.selectbox("Kích thước ô theo", ["Giá trị GD (Tỷ)", "Khối lượng GD"])
-        run_tm = c3.button("🔄 Nạp lại dữ liệu nền", type="primary", width="stretch")
+        run_tm = c3.button("🔄 Nạp lại dữ liệu", type="primary", width="stretch")
 
         st.markdown("""
         <div class="tm-legend-bar">
@@ -841,29 +859,20 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
             else:
                 st.warning("Không có dữ liệu giao dịch trong ngày đã chọn.")
         else:
-            if run_tm or "tm_base_board" not in st.session_state:
-                st.session_state["tm_base_board"] = fetch_ssi_realtime_board("hose")
-                all_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
-                ws_mgr.subscribe(all_syms)
+            if run_tm:
+                ws_mgr.refresh_board_now()
 
             def _render_live_treemap():
-                base_board = dict(st.session_state.get("tm_base_board") or {})
-                ws_ticks = ws_mgr.get_snapshot()
-
-                for sym, tk in ws_ticks.items():
-                    if sym in HARDCODED_HOSE_INDUSTRIES_MAPPING and HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] != "Chỉ số":
-                        cur = base_board.get(sym, {})
-                        ref = tk.get("ref") or cur.get("ref") or 0.0
-                        last = tk.get("last") or cur.get("last") or ref
-                        vol = tk.get("volume") or cur.get("volume") or 0.0
-                        pct = ((last - ref) / ref * 100.0) if ref > 0 else float(tk.get("pct") or cur.get("pct") or 0.0)
-                        base_board[sym] = {"last": last, "ref": ref, "pct": pct, "volume": vol}
+                live_board = ws_mgr.get_live_board()
+                if not live_board:
+                    live_board = ws_mgr.refresh_board_now()
 
                 rows_live = []
+                cnt_up = cnt_down = cnt_ref = 0
                 for sym, ind_raw in HARDCODED_HOSE_INDUSTRIES_MAPPING.items():
                     if ind_raw == "Chỉ số":
                         continue
-                    item = base_board.get(sym)
+                    item = live_board.get(sym)
                     if not item:
                         continue
                     last_px = float(item.get("last") or 0.0)
@@ -872,8 +881,19 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                     if last_px <= 0 or vol <= 0:
                         continue
 
+                    if pct > 0:
+                        cnt_up += 1
+                    elif pct < 0:
+                        cnt_down += 1
+                    else:
+                        cnt_ref += 1
+
                     ind = "Penny" if is_penny_stock(sym) else ind_raw
-                    size_val = round(last_px * vol / 1e6, 2) if tm_size_mode == "Giá trị GD (Tỷ)" else round(vol, 0)
+                    if tm_size_mode == "Giá trị GD (Tỷ)":
+                        size_val = round(float(item.get("value_bil") or (last_px * vol / 1e6)), 2)
+                    else:
+                        size_val = round(vol, 0)
+
                     if size_val > 0:
                         rows_live.append({
                             "Mã": sym,
@@ -885,10 +905,14 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 
                 if rows_live:
                     df_live_tm = pd.DataFrame(rows_live)
-                    st.caption(f"🟢 Đang đồng bộ trực tiếp **{len(df_live_tm)}** mã HOSE qua SSI WebSocket • Cập nhật lúc `{vn_now().strftime('%H:%M:%S')}`")
+                    sync_ts = ws_mgr.last_update.strftime("%H:%M:%S") if ws_mgr.last_update else vn_now().strftime("%H:%M:%S")
+                    st.caption(
+                        f"🟢 **SSI Realtime HOSE** • Đồng bộ lúc `{sync_ts}` • "
+                        f"Tăng: **{cnt_up}** | Giảm: **{cnt_down}** | TC: **{cnt_ref}**"
+                    )
                     st.plotly_chart(build_vn_treemap(df_live_tm), width="stretch", key="tm_live_chart")
                 else:
-                    st.info("Đang chờ dữ liệu khớp lệnh phiên hôm nay từ SSI...")
+                    st.info("Đang đồng bộ dữ liệu khớp lệnh phiên hôm nay từ SSI...")
 
             @st.fragment(run_every=5)
             def _treemap_live_fragment():
