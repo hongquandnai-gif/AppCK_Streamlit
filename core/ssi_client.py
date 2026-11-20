@@ -5,8 +5,8 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
-from typing import Callable, Dict, List, Optional
+from datetime import date, datetime, timedelta
+from typing import Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -31,12 +31,23 @@ def vn_today() -> date:
     return vn_now().date()
 
 
+def is_vn_market_hours() -> bool:
+    """Kiểm tra đang trong khung giờ giao dịch chứng khoán VN (T2-T6, 08:50 đến 15:10)."""
+    now = vn_now()
+    if now.weekday() >= 5:
+        return False
+    hhmm = now.hour * 100 + now.minute
+    return 850 <= hhmm <= 1510
+
+
 SSI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json, text/plain, */*",
     "Origin": "https://iboard.ssi.com.vn",
     "Referer": "https://iboard.ssi.com.vn/",
 }
+
+MAIN_INDEX_LIST = ["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"]
 
 ALL_INDEX_SYMBOLS = set(INDEX_SYMBOLS) | {
     "VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSML", "VNSMALL",
@@ -82,7 +93,7 @@ _RESOLVED_SSI_SYMBOL: Dict[str, str] = {}
 
 
 # ==============================================================================
-# 1. LẤY DANH SÁCH MÃ & BẢNG GIÁ NHANH TỪ SSI IBOARD
+# 1. DANH SÁCH MÃ & BẢNG GIÁ REALTIME TOÀN SÀN TỪ SSI IBOARD
 # ==============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
@@ -127,39 +138,76 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
     return stock_dict
 
 
+def _to_thousand_vnd(val) -> float:
+    try:
+        v = float(val or 0.0)
+        return (v / 1000.0) if v >= 500.0 else v
+    except Exception:
+        return 0.0
+
+
 def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
-    """Lấy snapshot toàn bộ bảng giá hiện tại từ SSI iBoard làm nền cho Treemap Realtime."""
+    """
+    Lấy toàn bộ bảng giá khớp lệnh trực tiếp của ~400 mã sàn HOSE trong 1 request (~0.25s).
+    Đọc đầy đủ matchedPrice / expectedMatchedPrice (ATO/ATC) / nmTotalTradedQty.
+    """
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
     board: Dict[str, dict] = {}
     try:
         resp = requests.get(url, headers=SSI_HEADERS, timeout=10)
         if resp.status_code == 200:
             items = resp.json().get("data", [])
+            ts_str = vn_now().strftime("%H:%M:%S")
             for item in items:
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
-                if len(sym) == 3 and sym.isalpha():
-                    ref = float(item.get("refPrice") or 0) / 1000.0
-                    last = float(item.get("matchedPrice") or item.get("lastPrice") or ref * 1000.0) / 1000.0
-                    vol = float(item.get("nmTotalTradedQty") or item.get("totalVolume") or 0)
-                    if last <= 0:
-                        last = ref
-                    pct = ((last - ref) / ref * 100.0) if ref > 0 else 0.0
-                    board[sym] = {
-                        "symbol": sym,
-                        "last": last,
-                        "ref": ref,
-                        "delta": last - ref,
-                        "pct": pct,
-                        "volume": vol,
-                        "time": vn_now().strftime("%H:%M:%S"),
-                    }
+                if len(sym) != 3 or not sym.isalpha():
+                    continue
+
+                ref = _to_thousand_vnd(item.get("refPrice") or item.get("priorClosePrice"))
+                last = _to_thousand_vnd(
+                    item.get("matchedPrice")
+                    or item.get("expectedMatchedPrice")
+                    or item.get("lastPrice")
+                    or item.get("closePrice")
+                )
+                if last <= 0:
+                    last = ref
+
+                vol = float(
+                    item.get("nmTotalTradedQty")
+                    or item.get("totalTradedQty")
+                    or item.get("stockVol")
+                    or item.get("totalVolume")
+                    or 0.0
+                )
+                val_vnd = float(item.get("nmTotalTradedValue") or 0.0)
+                delta = (last - ref) if ref > 0 else 0.0
+                pct_raw = item.get("priceChangePercent")
+                if pct_raw is not None and ref > 0:
+                    try:
+                        pct = float(pct_raw)
+                    except Exception:
+                        pct = (delta / ref * 100.0)
+                else:
+                    pct = (delta / ref * 100.0) if ref > 0 else 0.0
+
+                board[sym] = {
+                    "symbol": sym,
+                    "last": last,
+                    "ref": ref,
+                    "delta": delta,
+                    "pct": pct,
+                    "volume": vol,
+                    "value_bil": (val_vnd / 1e9) if val_vnd > 1e6 else (last * vol / 1e6),
+                    "time": ts_str,
+                }
     except Exception:
         pass
     return board
 
 
 # ==============================================================================
-# 2. SSI WEBSOCKET REALTIME STREAM MANAGER (LƯU TICK + CHUỖI NẾN 1 PHÚT LIỀN MẠCH)
+# 2. SSI WEBSOCKET + BACKGROUND SYNC MANAGER (KHÔNG CHẶN UI STREAMLIT)
 # ==============================================================================
 class SSIWebSocketManager:
     WS_URL = "wss://iboard-pushstream.ssi.com.vn/realtime"
@@ -167,11 +215,18 @@ class SSIWebSocketManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._live_ticks: Dict[str, dict] = {}
+        self._live_board: Dict[str, dict] = {}
+        self._board_updated_at: Optional[datetime] = None
+
+        # Cache trong RAM cho 6 chỉ số: {sym: {"df_1m": DataFrame, "df_d": DataFrame, "updated_at": datetime}}
+        self._index_cache: Dict[str, dict] = {}
         self._minute_bars: Dict[str, Dict[datetime, dict]] = {}
         self._bar_date: date = vn_today()
         self._subscribed: set[str] = set()
+
         self._ws: Optional[websocket.WebSocketApp] = None
-        self._thread: Optional[threading.Thread] = None
+        self._ws_thread: Optional[threading.Thread] = None
+        self._poll_thread: Optional[threading.Thread] = None
         self._running = False
         self._connected = False
         self._last_msg_time: Optional[datetime] = None
@@ -182,18 +237,21 @@ class SSIWebSocketManager:
 
     @property
     def last_update(self) -> Optional[datetime]:
-        return self._last_msg_time
+        return self._board_updated_at or self._last_msg_time
 
     def start(self, symbols: Optional[List[str]] = None):
         if symbols:
             self._subscribed.update([s.upper().strip() for s in symbols if s])
-        if self._running and self._thread and self._thread.is_alive():
+        if self._running:
             self.subscribe(list(self._subscribed))
             return
 
         self._running = True
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
+        self._ws_thread = threading.Thread(target=self._run_ws_loop, daemon=True)
+        self._ws_thread.start()
+
+        self._poll_thread = threading.Thread(target=self._run_background_sync_loop, daemon=True)
+        self._poll_thread.start()
 
     def stop(self):
         self._running = False
@@ -212,6 +270,83 @@ class SSIWebSocketManager:
         if self._ws and self._connected and new_syms:
             self._send_sub_payload(new_syms)
 
+    # ---------------- LUỒNG NỀN ĐỒNG BỘ BẢNG GIÁ & 6 CHỈ SỐ ----------------
+    def refresh_board_now(self) -> Dict[str, dict]:
+        """Đồng bộ ngay toàn bộ bảng giá HOSE từ SSI vào RAM."""
+        board = fetch_ssi_realtime_board("hose")
+        if board:
+            now_dt = vn_now()
+            with self._lock:
+                self._live_board = board
+                self._board_updated_at = now_dt
+                for sym, item in board.items():
+                    self._live_ticks[sym] = dict(item)
+        return self.get_live_board()
+
+    def refresh_indices_now(self, symbols: Optional[List[str]] = None) -> None:
+        """Đồng bộ song song dữ liệu 1m + D của 6 chỉ số vào RAM (không khóa UI)."""
+        target_syms = symbols or MAIN_INDEX_LIST
+        today_d = vn_today()
+
+        def _load_one(sym: str) -> Tuple[str, pd.DataFrame, pd.DataFrame]:
+            df_1m = fetch_ssi_ohlcv(sym, today_d - timedelta(days=6), today_d, "1")
+            df_d = fetch_ssi_ohlcv(sym, today_d - timedelta(days=25), today_d, "D")
+            return sym, df_1m, df_d
+
+        with ThreadPoolExecutor(max_workers=len(target_syms)) as pool:
+            futs = [pool.submit(_load_one, s) for s in target_syms]
+            now_dt = vn_now()
+            for fut in as_completed(futs):
+                try:
+                    sym, df_1m, df_d = fut.result()
+                    if not df_1m.empty or not df_d.empty:
+                        with self._lock:
+                            self._index_cache[sym] = {
+                                "df_1m": df_1m,
+                                "df_d": df_d,
+                                "updated_at": now_dt,
+                            }
+                except Exception:
+                    pass
+
+    def _run_background_sync_loop(self):
+        """Chạy ngầm liên tục: 5s cập nhật bảng giá HOSE, 15s cập nhật 6 chỉ số."""
+        cycle = 0
+        while self._running:
+            try:
+                self.refresh_board_now()
+                # Chu kỳ đầu tiên tải ngay 6 chỉ số, sau đó 15s/lần trong giờ giao dịch
+                if cycle == 0 or cycle % 3 == 0:
+                    self.refresh_indices_now(MAIN_INDEX_LIST)
+            except Exception:
+                pass
+
+            cycle += 1
+            sleep_sec = 5 if is_vn_market_hours() else 30
+            for _ in range(sleep_sec):
+                if not self._running:
+                    break
+                time.sleep(1)
+
+    def get_live_board(self) -> Dict[str, dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._live_board.items()}
+
+    def get_index_data(self, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        sym_u = symbol.upper().strip()
+        with self._lock:
+            entry = self._index_cache.get(sym_u)
+            if not entry:
+                return pd.DataFrame(), pd.DataFrame()
+            return entry["df_1m"].copy(), entry["df_d"].copy()
+
+    def ensure_indices_loaded(self, symbols: List[str]) -> None:
+        with self._lock:
+            missing = [s for s in symbols if s not in self._index_cache]
+        if missing:
+            self.refresh_indices_now(missing)
+
+    # ---------------- LUỒNG WEBSOCKET PUSHSTREAM ----------------
     def _send_sub_payload(self, symbols: List[str]):
         if not self._ws:
             return
@@ -262,8 +397,6 @@ class SSIWebSocketManager:
                     for item in payload:
                         if isinstance(item, dict):
                             self._parse_dict_tick(item)
-            elif "|" in message:
-                self._parse_pipe_tick(message)
         except Exception:
             pass
 
@@ -281,6 +414,14 @@ class SSIWebSocketManager:
         targets = set([sym] + WS_INDEX_CANONICAL_MIRROR.get(sym, []))
         for t_sym in targets:
             self._live_ticks[t_sym] = dict(tick_obj, symbol=t_sym)
+            if t_sym in self._live_board:
+                self._live_board[t_sym].update({
+                    "last": px,
+                    "delta": tick_obj["delta"],
+                    "pct": tick_obj["pct"],
+                    "volume": vol if vol > 0 else self._live_board[t_sym].get("volume", 0.0),
+                    "time": tick_obj["time"],
+                })
 
             bars = self._minute_bars.setdefault(t_sym, {})
             if minute_ts in bars:
@@ -291,13 +432,7 @@ class SSIWebSocketManager:
                 if vol > 0:
                     b["Volume"] = vol
             else:
-                bars[minute_ts] = {
-                    "Open": px,
-                    "High": px,
-                    "Low": px,
-                    "Close": px,
-                    "Volume": vol,
-                }
+                bars[minute_ts] = {"Open": px, "High": px, "Low": px, "Close": px, "Volume": vol}
 
     def _parse_dict_tick(self, item: dict):
         sym = str(item.get("stockSymbol") or item.get("indexId") or item.get("sym") or "").upper().strip()
@@ -315,15 +450,14 @@ class SSIWebSocketManager:
             return
 
         last_f = float(raw_last)
-        last_val = last_f / div if (last_f > 500 and not is_idx) else last_f
-
+        last_val = last_f / div if (last_f >= 500 and not is_idx) else last_f
         if is_idx and last_val < 50.0:
             return
 
         ref_val = None
         if raw_ref is not None:
             ref_f = float(raw_ref)
-            ref_val = ref_f / div if (ref_f > 500 and not is_idx) else ref_f
+            ref_val = ref_f / div if (ref_f >= 500 and not is_idx) else ref_f
             if is_idx and ref_val < 50.0:
                 ref_val = None
 
@@ -345,55 +479,13 @@ class SSIWebSocketManager:
             }
             self._store_tick_locked(sym, tick_obj)
 
-    def _parse_pipe_tick(self, raw: str):
-        parts = raw.split("|")
-        if len(parts) < 5:
-            return
-        header = parts[0]
-        sym = header.split("#")[-1].strip().upper()
-        if not sym:
-            return
-        is_idx = sym in ALL_INDEX_SYMBOLS
-        div = 1.0 if is_idx else 1000.0
-
-        try:
-            nums = []
-            for p in parts[1:15]:
-                try:
-                    val = float(p)
-                    if val > 0:
-                        nums.append(val)
-                except ValueError:
-                    continue
-            if nums:
-                last_val = nums[0] / div if (nums[0] > 500 and not is_idx) else nums[0]
-                if is_idx and last_val < 50.0:
-                    return
-                with self._lock:
-                    prev = self._live_ticks.get(sym, {})
-                    ref_val = prev.get("ref")
-                    delta = (last_val - ref_val) if ref_val else 0.0
-                    pct = (delta / ref_val * 100.0) if ref_val else 0.0
-                    tick_obj = {
-                        "symbol": sym,
-                        "last": last_val,
-                        "ref": ref_val,
-                        "delta": delta,
-                        "pct": pct,
-                        "volume": prev.get("volume", 0.0),
-                        "time": vn_now().strftime("%H:%M:%S"),
-                    }
-                    self._store_tick_locked(sym, tick_obj)
-        except Exception:
-            pass
-
     def _on_error(self, ws, error):
         self._connected = False
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._connected = False
 
-    def _run_loop(self):
+    def _run_ws_loop(self):
         while self._running:
             try:
                 self._ws = websocket.WebSocketApp(
@@ -433,7 +525,7 @@ class SSIWebSocketManager:
 def get_ssi_ws_manager() -> SSIWebSocketManager:
     mgr = SSIWebSocketManager()
     hose_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
-    mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"] + hose_syms)
+    mgr.start(MAIN_INDEX_LIST + hose_syms)
     return mgr
 
 
