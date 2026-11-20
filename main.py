@@ -35,6 +35,7 @@ from core.ssi_client import (
     clear_batch_cache,
     fetch_batch_ohlcv_ssi,
     fetch_ssi_ohlcv_cached,
+    fetch_ssi_realtime_board,
     fetch_ssi_stock_list,
     get_ssi_ws_manager,
     vn_now,
@@ -301,7 +302,12 @@ def build_vn_treemap(df_tm: pd.DataFrame) -> go.Figure:
             tiling=dict(packing="squarify", pad=3),
         )
     )
-    fig.update_layout(height=700, margin=dict(l=4, r=4, t=6, b=4), paper_bgcolor="#ffffff")
+    fig.update_layout(
+        height=700,
+        margin=dict(l=4, r=4, t=6, b=4),
+        paper_bgcolor="#ffffff",
+        uirevision="treemap_keep",
+    )
     return fig
 
 
@@ -337,6 +343,29 @@ def _patch_live_candle(df: pd.DataFrame, tick: Optional[dict], is_intraday: bool
     if not is_intraday and tick.get("volume"):
         out.loc[last_idx, "Volume"] = max(float(out.loc[last_idx, "Volume"]), float(tick["volume"]))
     return out
+
+
+def _merge_live_intraday_series(df_hist_1m: pd.DataFrame, ws_bars_df: pd.DataFrame, target_date: date) -> pd.DataFrame:
+    """Nối liền mạch chuỗi nến 1 phút từ WebSocket vào cuối dữ liệu REST API trong phiên hôm nay."""
+    if target_date != vn_today() or ws_bars_df.empty:
+        return df_hist_1m
+    ws_today = ws_bars_df[ws_bars_df.index.date == target_date]
+    if ws_today.empty:
+        return df_hist_1m
+    if df_hist_1m.empty:
+        return ws_today.copy()
+
+    combined = df_hist_1m.copy()
+    for ts, row in ws_today.iterrows():
+        if ts in combined.index:
+            combined.loc[ts, "High"] = max(float(combined.loc[ts, "High"]), float(row["High"]))
+            combined.loc[ts, "Low"] = min(float(combined.loc[ts, "Low"]), float(row["Low"]))
+            combined.loc[ts, "Close"] = float(row["Close"])
+            if float(row["Volume"]) > 0:
+                combined.loc[ts, "Volume"] = float(row["Volume"])
+        elif ts > combined.index[-1]:
+            combined.loc[ts] = row
+    return combined.sort_index()
 
 
 def _add_candlestick_clean(
@@ -492,6 +521,7 @@ def _style_chart(fig: go.Figure, height: int = 500, categorical_x: bool = False)
         template="plotly_white",
         height=height,
         hovermode="x unified",
+        uirevision="v11_keep_view",
         margin=dict(l=12, r=12, t=34, b=12),
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
@@ -634,7 +664,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         "🩺 Sức Khỏe & Ngày Phân Phối",
     ])
 
-    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP (6 CHỈ SỐ + LIVE 5S) ---
+    # --- SUB-TAB 1.1: CHỈ SỐ TRỰC TIẾP (6 CHỈ SỐ LIỀN MẠCH + KHÔNG GIẬT) ---
     with t1:
         c1, c2, c3 = st.columns([1.1, 3.6, 1.2], vertical_alignment="bottom")
         idx_date = c1.date_input("Ngày giao dịch", value=TODAY_VN, key="idx_live_date")
@@ -681,7 +711,10 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                     if not df_1m.empty:
                         actual_trade_date = df_1m.index[-1].date()
                         trade_date_str = actual_trade_date.strftime("%d/%m")
-                        plot_series = _filter_vn_trading_hours(df_1m[df_1m.index.date == actual_trade_date])
+                        day_1m = df_1m[df_1m.index.date == actual_trade_date]
+                        if actual_trade_date == TODAY_VN:
+                            day_1m = _merge_live_intraday_series(day_1m, ws_mgr.get_minute_bars_df(sym), TODAY_VN)
+                        plot_series = _filter_vn_trading_hours(day_1m)
                         if not df_d.empty:
                             df_prev = df_d[df_d.index.date < actual_trade_date]
                             if not df_prev.empty:
@@ -745,7 +778,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
 
             _style_chart(fig_idx, height=max(420, n_rows * 240), categorical_x=True)
             fig_idx.update_layout(showlegend=False)
-            st.plotly_chart(fig_idx, width="stretch")
+            st.plotly_chart(fig_idx, width="stretch", key="indices_live_chart")
 
         @st.fragment(run_every=5)
         def _indices_live_fragment():
@@ -756,11 +789,12 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         else:
             _render_indices_live_body()
 
-    # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP ---
+    # --- SUB-TAB 1.2: BẢN ĐỒ NHIỆT TREEMAP (REALTIME WEBSOCKET) ---
     with t2:
-        c1, c2, _ = st.columns([1.2, 1.5, 3.3], vertical_alignment="bottom")
+        c1, c2, c3, _ = st.columns([1.2, 1.4, 1.3, 2.1], vertical_alignment="bottom")
         tm_date = c1.date_input("Ngày bản đồ nhiệt", value=TODAY_VN, key="tm_date")
-        run_tm = c2.button("🗺️ Tạo Bản Đồ Nhiệt", type="primary", width="stretch")
+        tm_size_mode = c2.selectbox("Kích thước ô theo", ["Giá trị GD (Tỷ)", "Khối lượng GD"])
+        run_tm = c3.button("🔄 Nạp lại dữ liệu nền", type="primary", width="stretch")
 
         st.markdown("""
         <div class="tm-legend-bar">
@@ -775,41 +809,95 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
         </div>
         """, unsafe_allow_html=True)
 
-        if run_tm:
-            all_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
-            prog = st.progress(0, text="Đang tải dữ liệu toàn sàn từ SSI...")
-            raw_map = fetch_batch_ohlcv_ssi(
-                all_syms, tm_date - timedelta(days=10), tm_date, "D",
-                _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
-            )
-            prog.empty()
+        if tm_date != TODAY_VN:
+            if run_tm or st.session_state.get("tm_hist_date") != tm_date:
+                all_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
+                prog = st.progress(0, text="Đang tải dữ liệu lịch sử toàn sàn từ SSI...")
+                raw_map = fetch_batch_ohlcv_ssi(
+                    all_syms, tm_date - timedelta(days=10), tm_date, "D",
+                    _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
+                )
+                prog.empty()
+                rows_tm = []
+                for sym, df in raw_map.items():
+                    sub = df[df.index.date <= tm_date]
+                    if len(sub) >= 2:
+                        c_now = float(sub["Close"].iloc[-1])
+                        c_prev = float(sub["Close"].iloc[-2])
+                        vol = float(sub["Volume"].iloc[-1])
+                        if vol > 0 and c_prev > 0:
+                            pct = (c_now - c_prev) / c_prev * 100.0
+                            ind = "Penny" if is_penny_stock(sym) else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác")
+                            rows_tm.append({
+                                "Mã": sym, "Ngành": ind,
+                                "GTGD (Tỷ)": round(c_now * vol / 1e6, 2) if tm_size_mode == "Giá trị GD (Tỷ)" else round(vol, 0),
+                                "% Thay đổi": round(pct, 2), "Giá": round(c_now, 2),
+                            })
+                st.session_state["tm_hist_df"] = pd.DataFrame(rows_tm)
+                st.session_state["tm_hist_date"] = tm_date
 
-            rows_tm = []
-            for sym, df in raw_map.items():
-                sub = df[df.index.date <= tm_date]
-                if len(sub) >= 2:
-                    c_now = float(sub["Close"].iloc[-1])
-                    c_prev = float(sub["Close"].iloc[-2])
-                    vol = float(sub["Volume"].iloc[-1])
-                    if vol > 0 and c_prev > 0:
-                        pct = (c_now - c_prev) / c_prev * 100.0
-                        ind = "Penny" if is_penny_stock(sym) else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác")
-                        rows_tm.append({
+            if "tm_hist_df" in st.session_state and not st.session_state["tm_hist_df"].empty:
+                st.plotly_chart(build_vn_treemap(st.session_state["tm_hist_df"]), width="stretch", key="tm_hist_chart")
+            else:
+                st.warning("Không có dữ liệu giao dịch trong ngày đã chọn.")
+        else:
+            if run_tm or "tm_base_board" not in st.session_state:
+                st.session_state["tm_base_board"] = fetch_ssi_realtime_board("hose")
+                all_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
+                ws_mgr.subscribe(all_syms)
+
+            def _render_live_treemap():
+                base_board = dict(st.session_state.get("tm_base_board") or {})
+                ws_ticks = ws_mgr.get_snapshot()
+
+                for sym, tk in ws_ticks.items():
+                    if sym in HARDCODED_HOSE_INDUSTRIES_MAPPING and HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] != "Chỉ số":
+                        cur = base_board.get(sym, {})
+                        ref = tk.get("ref") or cur.get("ref") or 0.0
+                        last = tk.get("last") or cur.get("last") or ref
+                        vol = tk.get("volume") or cur.get("volume") or 0.0
+                        pct = ((last - ref) / ref * 100.0) if ref > 0 else float(tk.get("pct") or cur.get("pct") or 0.0)
+                        base_board[sym] = {"last": last, "ref": ref, "pct": pct, "volume": vol}
+
+                rows_live = []
+                for sym, ind_raw in HARDCODED_HOSE_INDUSTRIES_MAPPING.items():
+                    if ind_raw == "Chỉ số":
+                        continue
+                    item = base_board.get(sym)
+                    if not item:
+                        continue
+                    last_px = float(item.get("last") or 0.0)
+                    vol = float(item.get("volume") or 0.0)
+                    pct = float(item.get("pct") or 0.0)
+                    if last_px <= 0 or vol <= 0:
+                        continue
+
+                    ind = "Penny" if is_penny_stock(sym) else ind_raw
+                    size_val = round(last_px * vol / 1e6, 2) if tm_size_mode == "Giá trị GD (Tỷ)" else round(vol, 0)
+                    if size_val > 0:
+                        rows_live.append({
                             "Mã": sym,
                             "Ngành": ind,
-                            "GTGD (Tỷ)": round(c_now * vol / 1e6, 2),
+                            "GTGD (Tỷ)": size_val,
                             "% Thay đổi": round(pct, 2),
-                            "Giá": round(c_now, 2),
+                            "Giá": round(last_px, 2),
                         })
-            st.session_state["tm_df"] = pd.DataFrame(rows_tm)
 
-        if "tm_df" in st.session_state and not st.session_state["tm_df"].empty:
-            fig_tm = build_vn_treemap(st.session_state["tm_df"])
-            st.plotly_chart(fig_tm, width="stretch")
-        elif "tm_df" in st.session_state:
-            st.warning("Không có dữ liệu giao dịch trong ngày đã chọn.")
-        else:
-            st.info("Chọn ngày và nhấn **🗺️ Tạo Bản Đồ Nhiệt** để hiển thị dòng tiền toàn sàn.")
+                if rows_live:
+                    df_live_tm = pd.DataFrame(rows_live)
+                    st.caption(f"🟢 Đang đồng bộ trực tiếp **{len(df_live_tm)}** mã HOSE qua SSI WebSocket • Cập nhật lúc `{vn_now().strftime('%H:%M:%S')}`")
+                    st.plotly_chart(build_vn_treemap(df_live_tm), width="stretch", key="tm_live_chart")
+                else:
+                    st.info("Đang chờ dữ liệu khớp lệnh phiên hôm nay từ SSI...")
+
+            @st.fragment(run_every=5)
+            def _treemap_live_fragment():
+                _render_live_treemap()
+
+            if LIVE_AUTO:
+                _treemap_live_fragment()
+            else:
+                _render_live_treemap()
 
     # --- SUB-TAB 1.3: SỨC KHỎE & NGÀY PHÂN PHỐI ---
     with t3:
@@ -1548,7 +1636,11 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
             ws_mgr.subscribe([in_sym])
             tick = ws_mgr.get_snapshot([in_sym]).get(in_sym)
 
-            df_in = _filter_vn_trading_hours(fetch_ssi_ohlcv_cached(in_sym, in_date, in_date, in_tf))
+            df_in = fetch_ssi_ohlcv_cached(in_sym, in_date, in_date, in_tf)
+            if in_date == TODAY_VN and in_tf == "1":
+                df_in = _merge_live_intraday_series(df_in, ws_mgr.get_minute_bars_df(in_sym), TODAY_VN)
+            df_in = _filter_vn_trading_hours(df_in)
+
             if df_in.empty:
                 st.info("Chưa có dữ liệu khớp lệnh trong ngày đã chọn.")
                 return
@@ -1876,7 +1968,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                     )
 
                 _style_chart(fig_eq, height=470, categorical_x=True)
-                st.plotly_chart(fig_eq, width="stretch")
+                st.plotly_chart(fig_eq, width="stretch", key="bt_equity_chart")
 
                 sub_t1, sub_t2, sub_t3 = st.tabs(["📝 Sổ Lệnh Chi Tiết", "✅ Deal Đã Đóng", "📊 Lịch Sử Tài Sản"])
                 with sub_t1:
