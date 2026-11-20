@@ -24,12 +24,10 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def vn_now() -> datetime:
-    """Trả về thời gian hiện tại theo múi giờ Việt Nam (Asia/Ho_Chi_Minh)."""
     return datetime.now(VN_TZ)
 
 
 def vn_today() -> date:
-    """Trả về ngày hiện tại theo múi giờ Việt Nam (tránh lệch UTC sau 17h chiều)."""
     return vn_now().date()
 
 
@@ -40,13 +38,11 @@ SSI_HEADERS = {
     "Referer": "https://iboard.ssi.com.vn/",
 }
 
-# Tập hợp đầy đủ mã chỉ số (tránh chia nhầm 1000 cho điểm chỉ số)
 ALL_INDEX_SYMBOLS = set(INDEX_SYMBOLS) | {
     "VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSML", "VNSMALL",
     "HNXINDEX", "HNXUPCOMINDEX", "VNMIDCAP", "VNSMALLCAP", "VN100", "VNALL",
 }
 
-# Ánh xạ mã hiển thị trong App -> danh sách mã thử gọi trên SSI iBoard
 SSI_INDEX_ALIASES: Dict[str, List[str]] = {
     "VNINDEX": ["VNINDEX"],
     "VN30": ["VN30"],
@@ -59,7 +55,6 @@ SSI_INDEX_ALIASES: Dict[str, List[str]] = {
     "VNSML": ["VNSML", "VNSmallcap", "VNSMALL"],
 }
 
-# Ánh xạ sang mã chuẩn trên VNDirect dchart
 VNDIRECT_INDEX_MAP: Dict[str, str] = {
     "VNINDEX": "VNINDEX",
     "VN30": "VN30",
@@ -72,10 +67,8 @@ VNDIRECT_INDEX_MAP: Dict[str, str] = {
     "VNSML": "VNSML",
 }
 
-# Các chỉ số bị SSI chart API chia 1000 & làm tròn mất độ chính xác -> ưu tiên lấy từ VNDirect
 VNDIRECT_FIRST_INDICES = {"VNMID", "VNSMALL", "VNSML"}
 
-# Ánh xạ ngược từ mã WebSocket SSI trả về sang tên chuẩn của App
 WS_INDEX_CANONICAL_MIRROR: Dict[str, List[str]] = {
     "HNXINDEX": ["HNX", "HNXINDEX"],
     "HNXUPCOMINDEX": ["UPCOM", "HNXUPCOMINDEX"],
@@ -89,7 +82,7 @@ _RESOLVED_SSI_SYMBOL: Dict[str, str] = {}
 
 
 # ==============================================================================
-# 1. LẤY DANH SÁCH MÃ TỪ SSI IBOARD (ƯU TIÊN SSI, FALLBACK LOCAL)
+# 1. LẤY DANH SÁCH MÃ & BẢNG GIÁ NHANH TỪ SSI IBOARD
 # ==============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
@@ -134,8 +127,42 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
     return stock_dict
 
 
+def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
+    """
+    Lấy snapshot toàn bộ bảng giá hiện tại của sàn từ SSI iBoard (1 request duy nhất ~0.3s)
+    dùng làm dữ liệu nền tức thì cho Bản đồ nhiệt Realtime.
+    """
+    url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
+    board: Dict[str, dict] = {}
+    try:
+        resp = requests.get(url, headers=SSI_HEADERS, timeout=10)
+        if resp.status_code == 200:
+            items = resp.json().get("data", [])
+            for item in items:
+                sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
+                if len(sym) == 3 and sym.isalpha():
+                    ref = float(item.get("refPrice") or 0) / 1000.0
+                    last = float(item.get("matchedPrice") or item.get("lastPrice") or ref * 1000.0) / 1000.0
+                    vol = float(item.get("nmTotalTradedQty") or item.get("totalVolume") or 0)
+                    if last <= 0:
+                        last = ref
+                    pct = ((last - ref) / ref * 100.0) if ref > 0 else 0.0
+                    board[sym] = {
+                        "symbol": sym,
+                        "last": last,
+                        "ref": ref,
+                        "delta": last - ref,
+                        "pct": pct,
+                        "volume": vol,
+                        "time": vn_now().strftime("%H:%M:%S"),
+                    }
+    except Exception:
+        pass
+    return board
+
+
 # ==============================================================================
-# 2. SSI WEBSOCKET REALTIME STREAM MANAGER (CHẠY NỀN ĐA LUỒNG)
+# 2. SSI WEBSOCKET REALTIME STREAM MANAGER (LƯU TICK + CHUỖI NẾN 1 PHÚT LIỀN MẠCH)
 # ==============================================================================
 class SSIWebSocketManager:
     WS_URL = "wss://iboard-pushstream.ssi.com.vn/realtime"
@@ -143,6 +170,9 @@ class SSIWebSocketManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._live_ticks: Dict[str, dict] = {}
+        # Lưu chuỗi điểm theo từng phút trong ngày: {sym: {datetime_minute: {'Open','High','Low','Close','Volume'}}}
+        self._minute_bars: Dict[str, Dict[datetime, dict]] = {}
+        self._bar_date: date = vn_today()
         self._subscribed: set[str] = set()
         self._ws: Optional[websocket.WebSocketApp] = None
         self._thread: Optional[threading.Thread] = None
@@ -193,11 +223,13 @@ class SSIWebSocketManager:
             stock_syms = [s for s in symbols if s not in ALL_INDEX_SYMBOLS]
             idx_syms = [s for s in symbols if s in ALL_INDEX_SYMBOLS]
 
-            if stock_syms:
+            # Chia nhỏ gói đăng ký cổ phiếu (mỗi gói tối đa 150 mã để SSI Pushstream không từ chối)
+            for i in range(0, len(stock_syms), 150):
+                chunk = stock_syms[i:i + 150]
                 msg_stock = {
                     "type": "sub",
                     "topic": "stockRealtimeByListV2",
-                    "variables": stock_syms,
+                    "variables": chunk,
                     "component": "priceTableEquities",
                 }
                 self._ws.send(json.dumps(msg_stock))
@@ -241,9 +273,37 @@ class SSIWebSocketManager:
             pass
 
     def _store_tick_locked(self, sym: str, tick_obj: dict):
+        now_dt = vn_now()
+        today_d = now_dt.date()
+        if today_d != self._bar_date:
+            self._minute_bars.clear()
+            self._bar_date = today_d
+
+        # Làm tròn về mốc phút (naive Asia/Ho_Chi_Minh) để nối liền mạch với dữ liệu nến 1 phút
+        minute_ts = now_dt.replace(second=0, microsecond=0, tzinfo=None)
+        px = float(tick_obj["last"])
+        vol = float(tick_obj.get("volume") or 0.0)
+
         targets = set([sym] + WS_INDEX_CANONICAL_MIRROR.get(sym, []))
         for t_sym in targets:
             self._live_ticks[t_sym] = dict(tick_obj, symbol=t_sym)
+
+            bars = self._minute_bars.setdefault(t_sym, {})
+            if minute_ts in bars:
+                b = bars[minute_ts]
+                b["High"] = max(b["High"], px)
+                b["Low"] = min(b["Low"], px)
+                b["Close"] = px
+                if vol > 0:
+                    b["Volume"] = vol
+            else:
+                bars[minute_ts] = {
+                    "Open": px,
+                    "High": px,
+                    "Low": px,
+                    "Close": px,
+                    "Volume": vol,
+                }
 
     def _parse_dict_tick(self, item: dict):
         sym = str(item.get("stockSymbol") or item.get("indexId") or item.get("sym") or "").upper().strip()
@@ -263,7 +323,6 @@ class SSIWebSocketManager:
         last_f = float(raw_last)
         last_val = last_f / div if (last_f > 500 and not is_idx) else last_f
 
-        # Chặn dữ liệu chỉ số bị chia nhầm 1000 (VD: VNMID=1.82 thay vì 1820)
         if is_idx and last_val < 50.0:
             return
 
@@ -363,11 +422,26 @@ class SSIWebSocketManager:
                 return dict(self._live_ticks)
             return {s: dict(self._live_ticks[s]) for s in symbols if s in self._live_ticks}
 
+    def get_minute_bars_df(self, symbol: str) -> pd.DataFrame:
+        """Trả về DataFrame các phút tích lũy từ WebSocket trong ngày hôm nay để nối liền biểu đồ."""
+        sym_u = symbol.upper().strip()
+        with self._lock:
+            if self._bar_date != vn_today() or sym_u not in self._minute_bars:
+                return pd.DataFrame()
+            bars = self._minute_bars[sym_u]
+            if not bars:
+                return pd.DataFrame()
+            df = pd.DataFrame.from_dict(bars, orient="index").sort_index()
+            df.index.name = "Time"
+            return df
+
 
 @st.cache_resource
 def get_ssi_ws_manager() -> SSIWebSocketManager:
     mgr = SSIWebSocketManager()
-    mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL", "FPT", "SSI", "VCB", "HPG", "MWG"])
+    # Đăng ký sẵn các chỉ số + toàn bộ mã HOSE để Treemap và Biểu đồ nhận realtime ngay lập tức
+    hose_syms = [s for s, ind in HARDCODED_HOSE_INDUSTRIES_MAPPING.items() if ind != "Chỉ số"]
+    mgr.start(["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"] + hose_syms)
     return mgr
 
 
@@ -395,7 +469,6 @@ def _parse_tv_payload(data: dict, symbol: str) -> pd.DataFrame:
 
     sym_u = symbol.upper()
     if sym_u in ALL_INDEX_SYMBOLS:
-        # Từ chối dữ liệu chỉ số bị API chia nhầm 1000 (VD: VNMID=1.82, VNSML=1.18)
         if float(df["Close"].median()) < 50.0:
             return pd.DataFrame()
     elif float(df["Close"].median()) > 500.0:
@@ -428,11 +501,6 @@ def fetch_ssi_ohlcv(
     end_date: date,
     resolution: str = "D",
 ) -> pd.DataFrame:
-    """
-    Lấy nến OHLCV:
-    - VNMID / VNSMALL ưu tiên VNDirect dchart để giữ nguyên điểm chính xác (1,8xx / 1,1xx).
-    - Các mã & chỉ số khác ưu tiên SSI iBoard, tự động fallback VNDirect nếu dữ liệu lỗi.
-    """
     sym_u = symbol.upper().strip()
     dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
     dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
@@ -480,17 +548,16 @@ def fetch_ssi_ohlcv_cached(
     end_date: date,
     resolution: str = "D",
 ) -> pd.DataFrame:
-    """Bản có cache 60s phục vụ fragment Live Auto-Update (5s) không spam REST API."""
     return fetch_ssi_ohlcv(symbol, start_date, end_date, resolution)
 
 
 # ==============================================================================
-# 4. TẢI HÀNG LOẠT SONG SONG KÈM CACHE TTL TRONG RAM (TRÁNH CacheReplayClosureError)
+# 4. TẢI HÀNG LOẠT SONG SONG KÈM CACHE TTL TRONG RAM
 # ==============================================================================
 _BATCH_CACHE: Dict[tuple, tuple[float, Dict[str, pd.DataFrame]]] = {}
 _BATCH_CACHE_LOCK = threading.Lock()
-_BATCH_CACHE_TTL = 900       # 15 phút
-_BATCH_CACHE_MAX_ITEMS = 8   # Giới hạn RAM cho Streamlit Cloud
+_BATCH_CACHE_TTL = 900
+_BATCH_CACHE_MAX_ITEMS = 8
 
 
 def clear_batch_cache() -> None:
