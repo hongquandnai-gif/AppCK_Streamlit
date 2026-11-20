@@ -190,7 +190,7 @@ st.markdown("""
 
 
 # ==============================================================================
-# 2. HELPER BIỂU ĐỒ, LỌC NGÀY/GIỜ NGHỈ, LIVE CANDLE & MÀU SẮC
+# 2. HELPER BIỂU ĐỒ, LỌC NGÀY/GIỜ NGHỈ, LIVE CANDLE, OHLC HOVER & MÀU SẮC
 # ==============================================================================
 ALL_MAIN_INDICES = ["VNINDEX", "VN30", "HNX", "UPCOM", "VNMID", "VNSMALL"]
 
@@ -329,6 +329,97 @@ def _patch_live_candle(df: pd.DataFrame, tick: Optional[dict], is_intraday: bool
     if not is_intraday and tick.get("volume"):
         out.loc[last_idx, "Volume"] = max(float(out.loc[last_idx, "Volume"]), float(tick["volume"]))
     return out
+
+
+def _build_ohlc_hover_and_header(
+    df: pd.DataFrame,
+    sym: str,
+    prev_close_series: Optional[pd.Series] = None,
+    is_intraday: bool = False,
+) -> tuple[list[str], str]:
+    """
+    Tạo danh sách tooltip HTML (Ngày/Giờ, O/H/L/C, +/-Delta (+/-%), Vol) cho từng cây nến
+    và thanh tóm tắt OHLC của cây nến mới nhất (giống OHLCTooltip ở bản Desktop).
+    """
+    prev_s = prev_close_series if prev_close_series is not None else df["Close"].shift(1)
+    dt_fmt = "%d/%m/%Y %H:%M" if is_intraday else "%d/%m/%Y"
+
+    hovers: list[str] = []
+    last_bar_html = ""
+
+    for i, (ts, row) in enumerate(df.iterrows()):
+        o, h, l, c, v = (
+            float(row["Open"]), float(row["High"]),
+            float(row["Low"]), float(row["Close"]), float(row["Volume"]),
+        )
+        prev_c = prev_s.iloc[i]
+        date_str = ts.strftime(dt_fmt)
+
+        if pd.notna(prev_c) and float(prev_c) > 0:
+            delta = c - float(prev_c)
+            pct = (delta / float(prev_c)) * 100.0
+            clr = "#059669" if delta > 0 else ("#dc2626" if delta < 0 else "#d97706")
+            chg_txt = f"{delta:+.2f} ({pct:+.2f}%)"
+        else:
+            clr = "#475569"
+            chg_txt = "—"
+
+        hovers.append(
+            f"<b>{sym}</b> • {date_str}<br>"
+            f"O: <span style='color:{clr}'><b>{o:,.2f}</b></span>  "
+            f"H: <span style='color:{clr}'><b>{h:,.2f}</b></span>  "
+            f"L: <span style='color:{clr}'><b>{l:,.2f}</b></span>  "
+            f"C: <span style='color:{clr}'><b>{c:,.2f}</b></span><br>"
+            f"Biến động: <span style='color:{clr}'><b>{chg_txt}</b></span><br>"
+            f"Vol: <b>{v:,.0f}</b>"
+        )
+
+        if i == len(df) - 1:
+            last_bar_html = (
+                f"<div style='background:#ffffff; border:1px solid #e2e8f0; border-left:4px solid {clr}; "
+                f"border-radius:8px; padding:7px 14px; margin-bottom:6px; font-size:13px; color:#1e293b;'>"
+                f"<b>{sym}</b> ({date_str}) &nbsp;|&nbsp; "
+                f"O: <b style='color:{clr}'>{o:,.2f}</b> &nbsp; "
+                f"H: <b style='color:{clr}'>{h:,.2f}</b> &nbsp; "
+                f"L: <b style='color:{clr}'>{l:,.2f}</b> &nbsp; "
+                f"C: <b style='color:{clr}'>{c:,.2f}</b> &nbsp;|&nbsp; "
+                f"<b style='color:{clr}'>{chg_txt}</b> &nbsp;|&nbsp; "
+                f"Vol: <b>{v:,.0f}</b></div>"
+            )
+
+    return hovers, last_bar_html
+
+
+def _add_candlestick_with_ohlc_hover(
+    fig: go.Figure,
+    x_lbls: list[str],
+    df: pd.DataFrame,
+    sym: str,
+    hover_texts: list[str],
+    row: Optional[int] = None,
+    col: Optional[int] = None,
+):
+    """Vẽ nến + lớp hover OHLC & % tăng giảm sạch (không bị trùng khung tiếng Anh mặc định)."""
+    kw = {"row": row, "col": col} if (row is not None and col is not None) else {}
+    fig.add_trace(
+        go.Candlestick(
+            x=x_lbls, open=df["Open"], high=df["High"],
+            low=df["Low"], close=df["Close"], name=sym,
+            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
+            hoverinfo="skip",
+        ),
+        **kw,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x_lbls, y=df["Close"], mode="markers",
+            marker=dict(opacity=0, size=1),
+            name="OHLC", text=hover_texts,
+            hovertemplate="%{text}<extra></extra>",
+            showlegend=False,
+        ),
+        **kw,
+    )
 
 
 def _style_chart(fig: go.Figure, height: int = 500, categorical_x: bool = False) -> go.Figure:
@@ -531,7 +622,6 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                             if not df_prev.empty:
                                 prev_close = float(df_prev["Close"].iloc[-1])
 
-                # Fallback biểu đồ 30 phiên gần nhất nếu chỉ số không có nến 1 phút (VNMID / VNSMALL)
                 if plot_series.empty and not df_d.empty:
                     df_d_cut = df_d[df_d.index.date <= idx_date]
                     if not df_d_cut.empty:
@@ -557,10 +647,21 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                     line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#d97706")
                     x_lbls = _trading_x_labels(plot_series.index, is_intraday=is_intraday_mode)
 
+                    idx_hovers = []
+                    for ts, r_px in zip(plot_series.index, plot_series["Close"]):
+                        t_fmt = ts.strftime("%d/%m %H:%M" if is_intraday_mode else "%d/%m/%Y")
+                        if prev_close and prev_close > 0:
+                            d_pt = float(r_px) - prev_close
+                            p_pt = d_pt / prev_close * 100.0
+                            idx_hovers.append(f"<b>{sym}</b> • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b> ({d_pt:+.2f} | {p_pt:+.2f}%)")
+                        else:
+                            idx_hovers.append(f"<b>{sym}</b> • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b>")
+
                     fig_idx.add_trace(
                         go.Scatter(
                             x=x_lbls, y=plot_series["Close"],
                             mode="lines", name=sym, line=dict(color=line_col, width=2),
+                            text=idx_hovers, hovertemplate="%{text}<extra></extra>",
                         ),
                         row=r_idx, col=c_idx,
                     )
@@ -1157,19 +1258,29 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         - **RS Rating:** **`{latest.get('RS_Rating', 0)} / 99`**
                         """)
                     with col_chart:
-                        sub_p = df_d.tail(150)
+                        df_d_tmp = df_d.copy()
+                        df_d_tmp["PrevClose"] = df_d_tmp["Close"].shift(1)
+                        sub_p = df_d_tmp.tail(150)
+
+                        hover_vcp, ohlc_vcp_html = _build_ohlc_hover_and_header(
+                            sub_p, diag_sym, prev_close_series=sub_p["PrevClose"], is_intraday=False
+                        )
+                        st.markdown(ohlc_vcp_html, unsafe_allow_html=True)
+
                         x_vcp = _trading_x_labels(sub_p.index, is_intraday=False)
                         fig_vcp = go.Figure()
-                        fig_vcp.add_trace(go.Candlestick(
-                            x=x_vcp, open=sub_p["Open"], high=sub_p["High"],
-                            low=sub_p["Low"], close=sub_p["Close"], name=diag_sym,
-                            increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-                        ))
+                        _add_candlestick_with_ohlc_hover(fig_vcp, x_vcp, sub_p, diag_sym, hover_vcp)
                         for ma_col, col_hex in [("MA50", "#f97316"), ("MA150", "#8b5cf6"), ("MA200", "#ef4444")]:
-                            fig_vcp.add_trace(go.Scatter(x=x_vcp, y=sub_p[ma_col], name=ma_col, line=dict(color=col_hex, width=1.5)))
+                            fig_vcp.add_trace(
+                                go.Scatter(
+                                    x=x_vcp, y=sub_p[ma_col], name=ma_col,
+                                    line=dict(color=col_hex, width=1.5),
+                                    hovertemplate=f"{ma_col}: %{{y:,.2f}}<extra></extra>",
+                                )
+                            )
                         if vcp:
                             fig_vcp.add_hline(y=vcp["buy_point"], line_dash="dot", line_color="#7c3aed", annotation_text=f"Pivot: {vcp['buy_point']:,.2f}")
-                        _style_chart(fig_vcp, height=460, categorical_x=True)
+                        _style_chart(fig_vcp, height=440, categorical_x=True)
                         fig_vcp.update_layout(xaxis_rangeslider_visible=False)
                         st.plotly_chart(fig_vcp, width="stretch")
 
@@ -1252,7 +1363,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
 
 # ==============================================================================
-# WORKSPACE 4: PHÂN TÍCH BIỂU ĐỒ (BỎ NGÀY/GIỜ NGHỈ + LIVE WEBSOCKET 5S)
+# WORKSPACE 4: PHÂN TÍCH BIỂU ĐỒ (BỎ NGÀY/GIỜ NGHỈ + OHLC % + LIVE WS 5S)
 # ==============================================================================
 elif workspace == "📈 Phân Tích Biểu Đồ":
     t_eod, t_intra = st.tabs(["📉 Biểu Đồ Kỹ Thuật (EOD)", "⚡ Khớp Lệnh Trong Phiên & Bảng Giá SSI"])
@@ -1289,11 +1400,6 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
         def _render_eod_chart_body():
             ws_mgr.subscribe([sym_sel])
             tick = ws_mgr.get_snapshot([sym_sel]).get(sym_sel) if h_end >= TODAY_VN else None
-            if tick:
-                st.caption(
-                    f"⚡ **SSI Live ({sym_sel})**: Giá `{tick['last']:,.2f}` "
-                    f"(`{tick['delta']:+.2f}` | `{tick['pct']:+.2f}%`) • Cập nhật `{tick['time']}`"
-                )
 
             df_hist = fetch_ssi_ohlcv_cached(sym_sel, h_start - timedelta(days=400), h_end, "D")
             if df_hist.empty:
@@ -1316,26 +1422,30 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
             for p in active_mas:
                 df_hist[f"MA{p}"] = df_hist["Close"].rolling(p, min_periods=1).mean()
             df_hist["MA20_Vol"] = df_hist["Volume"].rolling(20, min_periods=1).mean()
+            df_hist["PrevClose"] = df_hist["Close"].shift(1)
             plot_df = df_hist[df_hist.index.date >= h_start]
 
             if plot_df.empty:
                 return
 
+            hover_texts, ohlc_bar_html = _build_ohlc_hover_and_header(
+                plot_df, sym_sel, prev_close_series=plot_df["PrevClose"], is_intraday=False
+            )
+            st.markdown(ohlc_bar_html, unsafe_allow_html=True)
+
             x_lbls = _trading_x_labels(plot_df.index, is_intraday=False)
             fig_c = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.74, 0.26], vertical_spacing=0.03)
-            fig_c.add_trace(
-                go.Candlestick(
-                    x=x_lbls, open=plot_df["Open"], high=plot_df["High"],
-                    low=plot_df["Low"], close=plot_df["Close"], name=sym_sel,
-                    increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-                ),
-                row=1, col=1,
-            )
+            _add_candlestick_with_ohlc_hover(fig_c, x_lbls, plot_df, sym_sel, hover_texts, row=1, col=1)
+
             fallback_cols = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
             for idx_p, p in enumerate(active_mas):
                 col_hex = MA_COLORS.get(p, fallback_cols[idx_p % len(fallback_cols)])
                 fig_c.add_trace(
-                    go.Scatter(x=x_lbls, y=plot_df[f"MA{p}"], name=f"MA{p}", line=dict(color=col_hex, width=1.4)),
+                    go.Scatter(
+                        x=x_lbls, y=plot_df[f"MA{p}"], name=f"MA{p}",
+                        line=dict(color=col_hex, width=1.4),
+                        hovertemplate=f"MA{p}: %{{y:,.2f}}<extra></extra>",
+                    ),
                     row=1, col=1,
                 )
             if show_ath:
@@ -1344,11 +1454,24 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                 fig_c.add_hline(y=last_c, line_dash="dot", line_color="#0284c7", annotation_text=f"Giá: {last_c:,.2f}", row=1, col=1)
 
             vol_colors = ["#10b981" if c >= o else "#ef4444" for c, o in zip(plot_df["Close"], plot_df["Open"])]
-            fig_c.add_trace(go.Bar(x=x_lbls, y=plot_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
+            fig_c.add_trace(
+                go.Bar(
+                    x=x_lbls, y=plot_df["Volume"], marker_color=vol_colors, name="Volume",
+                    hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+                ),
+                row=2, col=1,
+            )
             if show_ma_vol:
-                fig_c.add_trace(go.Scatter(x=x_lbls, y=plot_df["MA20_Vol"], name="MA20 Vol", line=dict(color="#d946ef", width=1.3)), row=2, col=1)
+                fig_c.add_trace(
+                    go.Scatter(
+                        x=x_lbls, y=plot_df["MA20_Vol"], name="MA20 Vol",
+                        line=dict(color="#d946ef", width=1.3),
+                        hovertemplate="MA20 Vol: %{y:,.0f}<extra></extra>",
+                    ),
+                    row=2, col=1,
+                )
 
-            _style_chart(fig_c, height=620, categorical_x=True)
+            _style_chart(fig_c, height=610, categorical_x=True)
             fig_c.update_layout(xaxis_rangeslider_visible=False)
             st.plotly_chart(fig_c, width="stretch")
 
@@ -1375,11 +1498,6 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                 return
             ws_mgr.subscribe([in_sym])
             tick = ws_mgr.get_snapshot([in_sym]).get(in_sym)
-            if tick:
-                st.success(
-                    f"⚡ **SSI Realtime ({in_sym})**: Giá khớp `{tick['last']:,.2f}` | "
-                    f"Thay đổi `{tick['delta']:+.2f} ({tick['pct']:+.2f}%)` | Cập nhật lúc `{tick['time']}`"
-                )
 
             df_in = _filter_vn_trading_hours(fetch_ssi_ohlcv_cached(in_sym, in_date, in_date, in_tf))
             if df_in.empty:
@@ -1393,24 +1511,30 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
             col_tbl, col_ch = st.columns([1.3, 2.7])
             with col_tbl:
                 df_disp = df_in.iloc[::-1].copy()
+                df_disp["%"] = (df_disp["Close"].pct_change(-1) * 100.0).fillna(0.0)
                 df_disp.index = df_disp.index.strftime("%H:%M")
                 st.dataframe(
-                    df_disp.style.format({"Open": "{:,.2f}", "High": "{:,.2f}", "Low": "{:,.2f}", "Close": "{:,.2f}", "Volume": "{:,.0f}"}),
-                    height=500, width="stretch",
+                    df_disp.style
+                    .map(_color_signed, subset=["%"])
+                    .format({"Open": "{:,.2f}", "High": "{:,.2f}", "Low": "{:,.2f}", "Close": "{:,.2f}", "%": "{:+.2f}%", "Volume": "{:,.0f}"}),
+                    height=515, width="stretch",
                 )
             with col_ch:
+                hover_in, ohlc_in_html = _build_ohlc_hover_and_header(df_in, in_sym, is_intraday=True)
+                st.markdown(ohlc_in_html, unsafe_allow_html=True)
+
                 fig_in = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
-                fig_in.add_trace(
-                    go.Candlestick(
-                        x=x_lbls, open=df_in["Open"], high=df_in["High"],
-                        low=df_in["Low"], close=df_in["Close"], name=in_sym,
-                        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-                    ),
-                    row=1, col=1,
-                )
+                _add_candlestick_with_ohlc_hover(fig_in, x_lbls, df_in, in_sym, hover_in, row=1, col=1)
+
                 v_cols = ["#10b981" if c >= o else "#ef4444" for c, o in zip(df_in["Close"], df_in["Open"])]
-                fig_in.add_trace(go.Bar(x=x_lbls, y=df_in["Volume"], marker_color=v_cols, name="Vol"), row=2, col=1)
-                _style_chart(fig_in, height=500, categorical_x=True)
+                fig_in.add_trace(
+                    go.Bar(
+                        x=x_lbls, y=df_in["Volume"], marker_color=v_cols, name="Vol",
+                        hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+                    ),
+                    row=2, col=1,
+                )
+                _style_chart(fig_in, height=470, categorical_x=True)
                 fig_in.update_layout(xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig_in, width="stretch")
 
