@@ -45,7 +45,7 @@ BASE_INDUSTRIES_MAPPING = {
     "ITA": "Bất động sản KCN", "GVR": "Bất động sản KCN", "PHR": "Bất động sản KCN",
     "DPR": "Bất động sản KCN", "LHG": "Bất động sản KCN", "BCM": "Bất động sản KCN",
     "VGC": "Bất động sản KCN", "TIP": "Bất động sản KCN", "SIP": "Bất động sản KCN",
-    "DTD": "Bất động sản KCN", "GEL": "Bất động sản KCN",
+    "DTD": "Bất động sản KCN", "GEL": "Bất động sản KCN", 
 
     # ------------------ Thép ------------------
     "HPG": "Thép", "HSG": "Thép", "NKG": "Thép", "TLH": "Thép",
@@ -53,13 +53,13 @@ BASE_INDUSTRIES_MAPPING = {
 
     # ------------------ Dầu khí ------------------
     "GAS": "Dầu khí", "PLX": "Dầu khí", "PVD": "Dầu khí", "PVS": "Dầu khí",
-    "BSR": "Dầu khí", "OIL": "Dầu khí", "PVT": "Dầu khí", "PVC": "Dầu khí",
+    "BSR": "Dầu khí", "OIL": "Dầu khí", "PVC": "Dầu khí",
     "PVB": "Dầu khí", "PVO": "Dầu khí",
 
     # ------------------ Năng lượng / Điện ------------------
     "POW": "Năng lượng", "REE": "Năng lượng", "GEG": "Năng lượng", "NT2": "Năng lượng",
     "PC1": "Năng lượng", "VSH": "Năng lượng", "TV2": "Năng lượng", "PPC": "Năng lượng",
-    "QTP": "Năng lượng", "HND": "Năng lượng",
+    "QTP": "Năng lượng", "HND": "Năng lượng", "GEE": "Năng lượng",
 
     # ------------------ Bán lẻ ------------------
     "MWG": "Bán lẻ", "PNJ": "Bán lẻ", "FRT": "Bán lẻ", "DGW": "Bán lẻ",
@@ -87,11 +87,11 @@ BASE_INDUSTRIES_MAPPING = {
     "VCG": "Đầu tư công", "HHV": "Đầu tư công", "LCG": "Đầu tư công", "FCN": "Đầu tư công",
     "C4G": "Đầu tư công", "G36": "Đầu tư công", "CTD": "Xây dựng", "HBC": "Xây dựng",
     "HT1": "Xây dựng", "KSB": "Xây dựng", "BCC": "Xây dựng", "PLC": "Xây dựng",
-    "CII": "Đầu tư công", "HUT": "Đầu tư công", "CTI": "Đầu tư công",
+    "CII": "Đầu tư công", "HUT": "Đầu tư công", "CTI": "Đầu tư công", "DPG": "Xây dựng",
 
     # ------------------ Vận tải & Cảng ------------------
     "GMD": "Vận tải & Cảng", "HAH": "Vận tải & Cảng", "VSC": "Vận tải & Cảng",
-    "VOS": "Vận tải & Cảng", "GSP": "Vận tải & Cảng",
+    "VOS": "Vận tải & Cảng", "GSP": "Vận tải & Cảng", "PVT": "Vận tải & Cảng",
     "HVN": "Hàng không", "VJC": "Hàng không",
 
     # ------------------ Nông nghiệp / Đường / Chăn nuôi ------------------
