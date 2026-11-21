@@ -90,6 +90,35 @@ WS_INDEX_CANONICAL_MIRROR: Dict[str, List[str]] = {
 }
 
 _RESOLVED_SSI_SYMBOL: Dict[str, str] = {}
+_RESOLVED_SSI_LOCK = threading.Lock()
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    if val is None or val == "":
+        return default
+    try:
+        f = float(val)
+        return f if f == f else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_positive(*vals) -> Optional[float]:
+    for v in vals:
+        f = _safe_float(v, default=-1.0)
+        if f > 0.0:
+            return f
+    return None
+
+
+def _first_non_negative(*vals) -> Optional[float]:
+    for v in vals:
+        if v is None or v == "":
+            continue
+        f = _safe_float(v, default=-1.0)
+        if f >= 0.0:
+            return f
+    return None
 
 
 # ==============================================================================
@@ -105,6 +134,8 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
             payload = resp.json()
             items = payload.get("data", []) if isinstance(payload, dict) else []
             for item in items:
+                if not isinstance(item, dict):
+                    continue
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
                 if len(sym) == 3 and sym.isalpha():
                     ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(
@@ -116,9 +147,9 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
                         "companyName": item.get("companyNameVi") or item.get("companyNameEn") or sym,
                         "industry": ind,
                         "exchange": exchange.upper(),
-                        "refPrice": float(item.get("refPrice") or 0) / 1000.0,
-                        "ceiling": float(item.get("ceiling") or 0) / 1000.0,
-                        "floor": float(item.get("floor") or 0) / 1000.0,
+                        "refPrice": _to_thousand_vnd(item.get("refPrice")),
+                        "ceiling": _to_thousand_vnd(item.get("ceiling")),
+                        "floor": _to_thousand_vnd(item.get("floor")),
                     }
     except Exception:
         pass
@@ -139,11 +170,8 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
 
 
 def _to_thousand_vnd(val) -> float:
-    try:
-        v = float(val or 0.0)
-        return (v / 1000.0) if v >= 500.0 else v
-    except Exception:
-        return 0.0
+    v = _safe_float(val, default=0.0)
+    return (v / 1000.0) if v >= 500.0 else v
 
 
 def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
@@ -156,37 +184,42 @@ def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
     try:
         resp = requests.get(url, headers=SSI_HEADERS, timeout=10)
         if resp.status_code == 200:
-            items = resp.json().get("data", [])
+            payload = resp.json()
+            items = payload.get("data", []) if isinstance(payload, dict) else []
             ts_str = vn_now().strftime("%H:%M:%S")
             for item in items:
+                if not isinstance(item, dict):
+                    continue
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
                 if len(sym) != 3 or not sym.isalpha():
                     continue
 
-                ref = _to_thousand_vnd(item.get("refPrice") or item.get("priorClosePrice"))
-                last = _to_thousand_vnd(
-                    item.get("matchedPrice")
-                    or item.get("expectedMatchedPrice")
-                    or item.get("lastPrice")
-                    or item.get("closePrice")
+                ref_raw = _first_positive(item.get("refPrice"), item.get("priorClosePrice"))
+                ref = _to_thousand_vnd(ref_raw) if ref_raw is not None else 0.0
+                last_raw = _first_positive(
+                    item.get("matchedPrice"),
+                    item.get("expectedMatchedPrice"),
+                    item.get("lastPrice"),
+                    item.get("closePrice"),
                 )
-                if last <= 0:
-                    last = ref
+                last = _to_thousand_vnd(last_raw) if last_raw is not None else ref
 
-                vol = float(
-                    item.get("nmTotalTradedQty")
-                    or item.get("totalTradedQty")
-                    or item.get("stockVol")
-                    or item.get("totalVolume")
-                    or 0.0
+                vol = _first_non_negative(
+                    item.get("nmTotalTradedQty"),
+                    item.get("totalTradedQty"),
+                    item.get("stockVol"),
+                    item.get("totalVolume"),
                 )
-                val_vnd = float(item.get("nmTotalTradedValue") or 0.0)
-                delta = (last - ref) if ref > 0 else 0.0
+                vol = vol if vol is not None else 0.0
+                val_vnd = _safe_float(item.get("nmTotalTradedValue"), default=0.0)
+                delta = (last - ref) if (ref > 0 and last > 0) else 0.0
                 pct_raw = item.get("priceChangePercent")
-                if pct_raw is not None and ref > 0:
+                if pct_raw is not None and pct_raw != "" and ref > 0:
                     try:
                         pct = float(pct_raw)
-                    except Exception:
+                        if pct != pct:
+                            pct = (delta / ref * 100.0)
+                    except (TypeError, ValueError):
                         pct = (delta / ref * 100.0)
                 else:
                     pct = (delta / ref * 100.0) if ref > 0 else 0.0
@@ -221,6 +254,7 @@ class SSIWebSocketManager:
         # Cache trong RAM cho 6 chỉ số: {sym: {"df_1m": DataFrame, "df_d": DataFrame, "updated_at": datetime}}
         self._index_cache: Dict[str, dict] = {}
         self._minute_bars: Dict[str, Dict[datetime, dict]] = {}
+        self._last_cum_vol: Dict[str, float] = {}
         self._bar_date: date = vn_today()
         self._subscribed: set[str] = set()
 
@@ -240,11 +274,14 @@ class SSIWebSocketManager:
         return self._board_updated_at or self._last_msg_time
 
     def start(self, symbols: Optional[List[str]] = None):
-        if symbols:
-            self._subscribed.update([s.upper().strip() for s in symbols if s])
         if self._running:
-            self.subscribe(list(self._subscribed))
+            if symbols:
+                self.subscribe(symbols)
             return
+
+        if symbols:
+            with self._lock:
+                self._subscribed.update([s.upper().strip() for s in symbols if s])
 
         self._running = True
         self._ws_thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -293,7 +330,7 @@ class SSIWebSocketManager:
             df_d = fetch_ssi_ohlcv(sym, today_d - timedelta(days=25), today_d, "D")
             return sym, df_1m, df_d
 
-        with ThreadPoolExecutor(max_workers=len(target_syms)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(target_syms), 8))) as pool:
             futs = [pool.submit(_load_one, s) for s in target_syms]
             now_dt = vn_now()
             for fut in as_completed(futs):
@@ -405,23 +442,40 @@ class SSIWebSocketManager:
         today_d = now_dt.date()
         if today_d != self._bar_date:
             self._minute_bars.clear()
+            self._last_cum_vol.clear()
             self._bar_date = today_d
 
         minute_ts = now_dt.replace(second=0, microsecond=0, tzinfo=None)
         px = float(tick_obj["last"])
-        vol = float(tick_obj.get("volume") or 0.0)
+        cum_vol = float(tick_obj.get("volume") or 0.0)
 
         targets = set([sym] + WS_INDEX_CANONICAL_MIRROR.get(sym, []))
         for t_sym in targets:
             self._live_ticks[t_sym] = dict(tick_obj, symbol=t_sym)
             if t_sym in self._live_board:
-                self._live_board[t_sym].update({
+                old_board = self._live_board[t_sym]
+                old_vol = float(old_board.get("volume") or 0.0)
+                new_vol = cum_vol if cum_vol > 0 else old_vol
+                old_val_bil = float(old_board.get("value_bil") or 0.0)
+                if new_vol > old_vol and px > 0:
+                    new_val_bil = old_val_bil + ((new_vol - old_vol) * px / 1e6)
+                else:
+                    new_val_bil = old_val_bil if old_val_bil > 0 else (px * new_vol / 1e6)
+                old_board.update({
                     "last": px,
                     "delta": tick_obj["delta"],
                     "pct": tick_obj["pct"],
-                    "volume": vol if vol > 0 else self._live_board[t_sym].get("volume", 0.0),
+                    "volume": new_vol,
+                    "value_bil": new_val_bil,
                     "time": tick_obj["time"],
                 })
+
+            delta_vol = 0.0
+            if cum_vol > 0:
+                prev_cum = self._last_cum_vol.get(t_sym)
+                if prev_cum is not None and cum_vol >= prev_cum:
+                    delta_vol = cum_vol - prev_cum
+                self._last_cum_vol[t_sym] = cum_vol
 
             bars = self._minute_bars.setdefault(t_sym, {})
             if minute_ts in bars:
@@ -429,44 +483,67 @@ class SSIWebSocketManager:
                 b["High"] = max(b["High"], px)
                 b["Low"] = min(b["Low"], px)
                 b["Close"] = px
-                if vol > 0:
-                    b["Volume"] = vol
+                if delta_vol > 0:
+                    b["Volume"] += delta_vol
             else:
-                bars[minute_ts] = {"Open": px, "High": px, "Low": px, "Close": px, "Volume": vol}
+                bars[minute_ts] = {"Open": px, "High": px, "Low": px, "Close": px, "Volume": delta_vol}
 
     def _parse_dict_tick(self, item: dict):
-        sym = str(item.get("stockSymbol") or item.get("indexId") or item.get("sym") or "").upper().strip()
+        sym = str(
+            item.get("stockSymbol")
+            or item.get("indexId")
+            or item.get("indexCode")
+            or item.get("sym")
+            or item.get("code")
+            or ""
+        ).upper().strip()
         if not sym:
             return
 
         is_idx = sym in ALL_INDEX_SYMBOLS
         div = 1.0 if is_idx else 1000.0
 
-        raw_last = item.get("matchedPrice") or item.get("indexValue") or item.get("lastPrice") or item.get("c")
-        raw_ref = item.get("refPrice") or item.get("prevIndexValue") or item.get("r")
-        raw_vol = item.get("nmTotalTradedQty") or item.get("totalVolume") or item.get("v")
-
-        if raw_last is None:
+        last_f = _first_positive(
+            item.get("matchedPrice"),
+            item.get("expectedMatchedPrice"),
+            item.get("indexValue"),
+            item.get("lastPrice"),
+            item.get("c"),
+        )
+        if last_f is None:
             return
 
-        last_f = float(raw_last)
-        last_val = last_f / div if (last_f >= 500 and not is_idx) else last_f
-        if is_idx and last_val < 50.0:
+        last_val = last_f / div if (last_f >= 500.0 and not is_idx) else last_f
+        if last_val <= 0.0 or (is_idx and last_val < 50.0):
             return
 
+        ref_f = _first_positive(
+            item.get("refPrice"),
+            item.get("priorClosePrice"),
+            item.get("prevIndexValue"),
+            item.get("r"),
+        )
         ref_val = None
-        if raw_ref is not None:
-            ref_f = float(raw_ref)
-            ref_val = ref_f / div if (ref_f >= 500 and not is_idx) else ref_f
+        if ref_f is not None:
+            ref_val = ref_f / div if (ref_f >= 500.0 and not is_idx) else ref_f
             if is_idx and ref_val < 50.0:
                 ref_val = None
+
+        raw_vol = _first_non_negative(
+            item.get("nmTotalTradedQty"),
+            item.get("totalTradedQty"),
+            item.get("totalVolume"),
+            item.get("v"),
+        )
 
         with self._lock:
             prev = self._live_ticks.get(sym, {})
             if ref_val is None:
-                ref_val = prev.get("ref")
-            delta = (last_val - ref_val) if (ref_val and ref_val > 0) else 0.0
-            pct = (delta / ref_val * 100.0) if (ref_val and ref_val > 0) else 0.0
+                ref_val = prev.get("ref") or self._live_board.get(sym, {}).get("ref")
+            if ref_val is not None and float(ref_val) <= 0:
+                ref_val = None
+            delta = (last_val - ref_val) if ref_val else 0.0
+            pct = (delta / ref_val * 100.0) if ref_val else 0.0
 
             tick_obj = {
                 "symbol": sym,
@@ -474,7 +551,7 @@ class SSIWebSocketManager:
                 "ref": ref_val,
                 "delta": delta,
                 "pct": pct,
-                "volume": float(raw_vol) if raw_vol is not None else prev.get("volume", 0.0),
+                "volume": raw_vol if raw_vol is not None else prev.get("volume", 0.0),
                 "time": vn_now().strftime("%H:%M:%S"),
             }
             self._store_tick_locked(sym, tick_obj)
@@ -532,21 +609,45 @@ def get_ssi_ws_manager() -> SSIWebSocketManager:
 # ==============================================================================
 # 3. API LẤY DỮ LIỆU OHLCV LỊCH SỬ & INTRADAY (SSI iBoard + FALLBACK VNDIRECT)
 # ==============================================================================
-def _parse_tv_payload(data: dict, symbol: str) -> pd.DataFrame:
-    if not data or "t" not in data or len(data["t"]) == 0:
+def _parse_tv_payload(data: dict, symbol: str, resolution: str = "D") -> pd.DataFrame:
+    if not isinstance(data, dict) or not data.get("t"):
         return pd.DataFrame()
+    t_arr = data.get("t")
+    if not isinstance(t_arr, list) or len(t_arr) == 0:
+        return pd.DataFrame()
+
+    n = len(t_arr)
+    for k in ("o", "h", "l", "c"):
+        arr = data.get(k)
+        if not isinstance(arr, list) or len(arr) != n:
+            return pd.DataFrame()
+
+    v_arr = data.get("v")
+    if not isinstance(v_arr, list) or len(v_arr) != n:
+        v_arr = [0.0] * n
+
     df = pd.DataFrame({
-        "Time": pd.to_datetime(data["t"], unit="s", utc=True)
+        "Time": pd.to_datetime(t_arr, unit="s", utc=True)
         .tz_convert(VN_TZ)
         .tz_localize(None),
         "Open": pd.to_numeric(data["o"], errors="coerce"),
         "High": pd.to_numeric(data["h"], errors="coerce"),
         "Low": pd.to_numeric(data["l"], errors="coerce"),
         "Close": pd.to_numeric(data["c"], errors="coerce"),
-        "Volume": pd.to_numeric(data["v"], errors="coerce"),
-    }).dropna(subset=["Close"])
+        "Volume": pd.to_numeric(v_arr, errors="coerce"),
+    }).dropna(subset=["Time", "Close"])
+
+    if df.empty:
+        return df
+
+    df["Open"] = df["Open"].fillna(df["Close"])
+    df["High"] = df["High"].fillna(df["Close"])
+    df["Low"] = df["Low"].fillna(df["Close"])
+    df["Volume"] = df["Volume"].fillna(0.0)
 
     df = df.set_index("Time").sort_index()
+    if str(resolution).upper() in ("D", "1D", "W", "1W", "M", "1M"):
+        df.index = df.index.normalize()
     df = df[~df.index.duplicated(keep="last")]
     if df.empty:
         return df
@@ -555,7 +656,7 @@ def _parse_tv_payload(data: dict, symbol: str) -> pd.DataFrame:
     if sym_u in ALL_INDEX_SYMBOLS:
         if float(df["Close"].median()) < 50.0:
             return pd.DataFrame()
-    elif float(df["Close"].median()) > 500.0:
+    elif float(df["Close"].median()) >= 500.0:
         for col in ["Open", "High", "Low", "Close"]:
             df[col] = df[col] / 1000.0
 
@@ -573,7 +674,7 @@ def _fetch_vndirect_ohlcv(sym_u: str, resolution: str, t_from: int, t_to: int) -
     try:
         resp = requests.get(vnd_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if resp.status_code == 200:
-            return _parse_tv_payload(resp.json(), sym_u)
+            return _parse_tv_payload(resp.json(), sym_u, resolution=resolution)
     except Exception:
         pass
     return pd.DataFrame()
@@ -586,6 +687,9 @@ def fetch_ssi_ohlcv(
     resolution: str = "D",
 ) -> pd.DataFrame:
     sym_u = symbol.upper().strip()
+    if not sym_u or start_date > end_date:
+        return pd.DataFrame()
+
     dt_from = datetime.combine(start_date, datetime.min.time(), tzinfo=VN_TZ)
     dt_to = datetime.combine(end_date, datetime.max.time(), tzinfo=VN_TZ)
     t_from, t_to = int(dt_from.timestamp()), int(dt_to.timestamp())
@@ -595,9 +699,10 @@ def fetch_ssi_ohlcv(
         if not df_vnd.empty:
             return df_vnd
 
-    candidates = SSI_INDEX_ALIASES.get(sym_u, [sym_u])
-    if sym_u in _RESOLVED_SSI_SYMBOL:
-        resolved = _RESOLVED_SSI_SYMBOL[sym_u]
+    candidates = list(SSI_INDEX_ALIASES.get(sym_u, [sym_u]))
+    with _RESOLVED_SSI_LOCK:
+        resolved = _RESOLVED_SSI_SYMBOL.get(sym_u)
+    if resolved:
         candidates = [resolved] + [c for c in candidates if c != resolved]
 
     for cand in candidates:
@@ -610,9 +715,10 @@ def fetch_ssi_ohlcv(
             if resp.status_code == 200:
                 raw = resp.json()
                 data = raw.get("data", raw) if isinstance(raw, dict) else {}
-                df = _parse_tv_payload(data, sym_u)
+                df = _parse_tv_payload(data, sym_u, resolution=resolution)
                 if not df.empty:
-                    _RESOLVED_SSI_SYMBOL[sym_u] = cand
+                    with _RESOLVED_SSI_LOCK:
+                        _RESOLVED_SSI_SYMBOL[sym_u] = cand
                     return df
         except Exception:
             continue
@@ -657,9 +763,9 @@ def fetch_batch_ohlcv_ssi(
     max_workers: int = 16,
     _progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    unique_syms = sorted(list(set(symbols)))
+    unique_syms = sorted(list(set(str(s).strip().upper() for s in symbols if s)))
     total = len(unique_syms)
-    if total == 0:
+    if total == 0 or start_date > end_date:
         return {}
 
     cache_key = (tuple(unique_syms), start_date, end_date, resolution)
@@ -679,7 +785,7 @@ def fetch_batch_ohlcv_ssi(
 
     results: Dict[str, pd.DataFrame] = {}
     done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
         future_map = {
             pool.submit(fetch_ssi_ohlcv, sym, start_date, end_date, resolution): sym
             for sym in unique_syms
@@ -696,10 +802,11 @@ def fetch_batch_ohlcv_ssi(
             if _progress_cb:
                 _progress_cb(done, total)
 
-    with _BATCH_CACHE_LOCK:
-        if len(_BATCH_CACHE) >= _BATCH_CACHE_MAX_ITEMS:
-            oldest_key = min(_BATCH_CACHE, key=lambda k: _BATCH_CACHE[k][0])
-            _BATCH_CACHE.pop(oldest_key, None)
-        _BATCH_CACHE[cache_key] = (now_ts, results)
+    if results:
+        with _BATCH_CACHE_LOCK:
+            if len(_BATCH_CACHE) >= _BATCH_CACHE_MAX_ITEMS:
+                oldest_key = min(_BATCH_CACHE, key=lambda k: _BATCH_CACHE[k][0])
+                _BATCH_CACHE.pop(oldest_key, None)
+            _BATCH_CACHE[cache_key] = (time.time(), results)
 
     return {k: v.copy() for k, v in results.items()}

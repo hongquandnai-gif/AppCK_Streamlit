@@ -142,7 +142,8 @@ for _sym in PENNY_SYMBOLS:
 
 def is_penny_stock(symbol: str) -> bool:
     """Kiểm tra nhanh một mã có thuộc nhóm Penny hay không."""
-    return symbol in PENNY_SYMBOLS or HARDCODED_HOSE_INDUSTRIES_MAPPING.get(symbol) == "Penny"
+    sym = str(symbol or "").strip().upper()
+    return sym in PENNY_SYMBOLS or HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym) == "Penny"
 
 
 def get_symbols_by_industry(selected_industry: str, exclude_penny: bool = False) -> list[str]:

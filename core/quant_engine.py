@@ -17,7 +17,7 @@ def detect_vcp_pattern(data: pd.DataFrame, current_date: date, lookback_days: in
     sub = data[
         (data.index.date <= current_date)
         & (data.index.date >= (current_date - timedelta(days=lookback_days)))
-    ].copy()
+    ].dropna(subset=["Close"]).copy()
     if len(sub) < 35:
         return None
 
@@ -193,10 +193,10 @@ def compute_distribution_days_core(
         return 0, 0, 0, 0.0
 
     work = df.copy()
-    if "Pct" not in work.columns:
+    if "Close" in work.columns:
         work["Pct"] = work["Close"].pct_change() * 100.0
-    elif work["Pct"].abs().max() < 1.5:
-        work["Pct"] = work["Pct"] * 100.0
+    elif "Pct" not in work.columns:
+        work["Pct"] = 0.0
 
     work["vol_up"] = work["Volume"] > work["Volume"].shift(1)
     rng = (work["High"] - work["Low"]).replace(0, np.nan)
@@ -231,8 +231,10 @@ def compute_distribution_days_core(
         if not (is_m[i] or is_s[i] or (include_churn and is_c[i])):
             continue
         base = closes[i]
-        fut_max = np.max(closes[i + 1:]) if i + 1 < n else base
-        if fut_max >= base * (1.0 + rebound_pct / 100.0):
+        if not np.isfinite(base) or base <= 0:
+            continue
+        fut_max = np.nanmax(closes[i + 1:]) if i + 1 < n else base
+        if np.isfinite(fut_max) and fut_max >= base * (1.0 + rebound_pct / 100.0):
             continue
 
         d = dates[i]
@@ -381,7 +383,9 @@ def run_minervini_screener(
         return proc_map, [], pd.DataFrame(), {"peak_price": 0.0, "peak_date": None, "pct_drop": 0.0}
 
     df_latest = pd.DataFrame(latest_rows)
-    df_latest["RS_Rating"] = (df_latest["Momentum"].rank(pct=True, na_option="bottom") * 99).fillna(0).astype(int) + 1
+    df_latest["RS_Rating"] = (
+        (df_latest["Momentum"].rank(pct=True, na_option="bottom") * 98.0).round().fillna(0).astype(int) + 1
+    ).clip(1, 99)
     rs_map = dict(zip(df_latest["Symbol"], df_latest["RS_Rating"]))
     for sym, rs in rs_map.items():
         proc_map[sym]["RS_Rating"] = rs
@@ -525,7 +529,9 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
 
     if momentum_dict:
         mom_df = pd.DataFrame(momentum_dict)
-        rs_df = (mom_df.rank(axis=1, pct=True, na_option="bottom") * 99.0).fillna(0.0).astype(int) + 1
+        rs_df = (
+            (mom_df.rank(axis=1, pct=True, na_option="bottom") * 98.0).round().fillna(0.0).astype(int) + 1
+        ).clip(1, 99)
         for sym in momentum_dict:
             data_map[sym]["RS_Rating"] = rs_df[sym]
 
@@ -609,7 +615,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             idx_pos = int(vnindex_df.index.get_indexer([current_date], method="pad")[0])
             if idx_pos >= 25:
                 cnt_dd, _, _, risk_score = compute_distribution_days_core(
-                    vnindex_df.iloc[:idx_pos + 1], window=25,
+                    vnindex_df.iloc[max(0, idx_pos - 60):idx_pos + 1], window=25,
                     cancel_rebound_pct=p["dd_cancel_pct"],
                     w_dd=p["w_dd"], w_stall=p["w_stall"], include_churn=True,
                 )
@@ -618,12 +624,18 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
         pct_bottoming = 0.0
         if not breadth_df.empty and current_date in breadth_df.index:
             b_row = breadth_df.loc[current_date]
-            pct_above_200 = float(b_row.get("Pct_Above_MA200", 50.0))
-            pct_bottoming = float(b_row.get("Pct_Bottoming", 0.0))
-            breadth_peak10 = float(b_row.get("Breadth_Peak10", pct_above_200))
+            raw_p200 = b_row.get("Pct_Above_MA200")
+            raw_pbot = b_row.get("Pct_Bottoming")
+            raw_bpk = b_row.get("Breadth_Peak10")
+            pct_above_200 = float(raw_p200) if pd.notna(raw_p200) else 50.0
+            pct_bottoming = float(raw_pbot) if pd.notna(raw_pbot) else 0.0
+            breadth_peak10 = float(raw_bpk) if pd.notna(raw_bpk) else pct_above_200
+            prev_pct_above_200 = pct_above_200
             loc_b = int(breadth_df.index.get_indexer([current_date])[0])
             if loc_b > 0:
-                prev_pct_above_200 = float(breadth_df.iloc[loc_b - 1].get("Pct_Above_MA200", pct_above_200))
+                raw_prev = breadth_df.iloc[loc_b - 1].get("Pct_Above_MA200")
+                if pd.notna(raw_prev):
+                    prev_pct_above_200 = float(raw_prev)
 
         vni_above_ma20 = vni_above_ma50 = True
         vni_green_day = False
@@ -632,7 +644,8 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             v_c = float(v_row["Close"])
             vni_above_ma20 = bool(pd.isna(v_row.get("MA20")) or v_c >= v_row["MA20"])
             vni_above_ma50 = bool(pd.isna(v_row.get("MA50")) or v_c >= v_row["MA50"])
-            vni_green_day = bool(float(v_row.get("Pct", 0.0)) >= 0.3)
+            v_pct = v_row.get("Pct")
+            vni_green_day = bool(pd.notna(v_pct) and float(v_pct) >= 0.3)
 
         is_panic_zone_today = (pct_above_200 <= panic_ma200_thresh) and (pct_bottoming >= panic_bot52_thresh)
         if is_panic_zone_today:
@@ -687,7 +700,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             pos["last_price"] = curr_price
             active_holdings_val += pos["qty"] * curr_price * 1000.0
 
-            pct_pnl = (curr_price - pos["price"]) / pos["price"]
+            pct_pnl = ((curr_price - pos["price"]) / pos["price"]) if pos["price"] > 0 else 0.0
             days_held = (current_date.date() - pos["date"]).days
             is_bot_bet = pos.get("is_bottom_bet", False)
 
@@ -729,8 +742,8 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             qty = holdings[sym]["qty"]
             buy_price = holdings[sym]["price"]
             proceeds = qty * price * 1000.0 * (1.0 - fee)
-            cost_basis = qty * buy_price * 1000.0
-            settle_idx = min(day_idx + t_plus, total_days - 1)
+            cost_basis = qty * buy_price * 1000.0 * (1.0 + fee)
+            settle_idx = day_idx + t_plus
             pending_cash.append((settle_idx, proceeds))
             active_holdings_val -= qty * price * 1000.0
             vcp_note = holdings[sym].get("vcp_tag", "")
@@ -745,7 +758,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                 "Ngày Bán": current_date.strftime("%d/%m/%Y"),
                 "Giá Mua": round(buy_price, 2), "Giá Bán": round(price, 2), "KL": qty,
                 "Lãi/Lỗ": round(proceeds - cost_basis, 0),
-                "% Lãi/Lỗ": round((price - buy_price) / buy_price * 100.0, 2),
+                "% Lãi/Lỗ": round((price - buy_price) / buy_price * 100.0, 2) if buy_price > 0 else 0.0,
                 "Lý do": f"{reason} | {vcp_note}" if vcp_note else reason,
             })
             del holdings[sym]
@@ -755,19 +768,19 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
         total_nav = cash + pending_cash_val + total_stock_val
         target_equity_val = total_nav * target_exposure
 
-        if use_dd_shield and total_stock_val > target_equity_val * 1.05 and active_holdings_val > 0:
+        if (use_dd_shield or is_euphoria_top) and total_stock_val > target_equity_val * 1.05 and active_holdings_val > 0:
             keep_ratio = 0.0 if target_exposure == 0.0 else (target_equity_val / total_stock_val)
             for sym, pos in list(holdings.items()):
                 if keep_ratio > 0 and pos.get("is_power_play", False):
                     continue
                 current_qty = pos["qty"]
-                target_qty = int(current_qty * keep_ratio)
+                target_qty = 0 if keep_ratio == 0.0 else (int(current_qty * keep_ratio) // 100) * 100
                 sell_qty = current_qty - target_qty
                 if sell_qty > 0:
                     price = pos["last_price"]
                     proceeds = sell_qty * price * 1000.0 * (1.0 - fee)
-                    cost_basis = sell_qty * pos["price"] * 1000.0
-                    settle_idx = min(day_idx + t_plus, total_days - 1)
+                    cost_basis = sell_qty * pos["price"] * 1000.0 * (1.0 + fee)
+                    settle_idx = day_idx + t_plus
                     pending_cash.append((settle_idx, proceeds))
                     total_stock_val -= sell_qty * price * 1000.0
                     active_holdings_val -= sell_qty * price * 1000.0
@@ -775,7 +788,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                     trim_reason = "Bán Đỉnh Hưng Phấn" if is_euphoria_top else f"Hạ Tỷ Trọng PP (Risk={risk_score:.1f})"
                     if target_qty > 0:
                         holdings[sym]["qty"] = target_qty
-                        note_txt = f"Hạ {100 * (1.0 - keep_ratio):.0f}% (T+{t_plus})"
+                        note_txt = f"Hạ {100 * (sell_qty / current_qty):.0f}% (T+{t_plus})"
                     else:
                         del holdings[sym]
                         note_txt = f"Thoát hết (T+{t_plus})"
@@ -789,7 +802,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                         "Ngày Bán": current_date.strftime("%d/%m/%Y"),
                         "Giá Mua": round(pos["price"], 2), "Giá Bán": round(price, 2), "KL": sell_qty,
                         "Lãi/Lỗ": round(proceeds - cost_basis, 0),
-                        "% Lãi/Lỗ": round((price - pos["price"]) / pos["price"] * 100.0, 2),
+                        "% Lãi/Lỗ": round((price - pos["price"]) / pos["price"] * 100.0, 2) if pos["price"] > 0 else 0.0,
                         "Lý do": trim_reason,
                     })
 
@@ -816,22 +829,30 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                     continue
                 row = df.loc[current_date]
                 c, vol = float(row["Close"]), float(row["Volume"])
-                vol_ma20 = float(row.get("VolMA20", 0) or 0.0)
-                vol_ma10 = float(row.get("VolMA10", 0) or 0.0)
-                rs = int(row.get("RS_Rating", 0) or 0)
-                if vol < min_vol or vol_ma20 <= 0 or c <= 0:
+                raw_v20 = row.get("VolMA20")
+                raw_v10 = row.get("VolMA10")
+                raw_rs = row.get("RS_Rating")
+                vol_ma20 = float(raw_v20) if pd.notna(raw_v20) else 0.0
+                vol_ma10 = float(raw_v10) if pd.notna(raw_v10) else 0.0
+                rs = int(raw_rs) if pd.notna(raw_rs) else 0
+                if not np.isfinite(c) or not np.isfinite(vol) or vol < min_vol or vol_ma20 <= 0 or c <= 0:
                     continue
 
                 if allow_normal_vcp_buy:
                     if allowed_sectors is not None and sec not in allowed_sectors:
                         continue
-                    if (vol / vol_ma20) < vol_mult or float(row.get("Close_Pos", 0.5)) < 0.5:
+                    close_pos_val = row.get("Close_Pos")
+                    close_pos = float(close_pos_val) if pd.notna(close_pos_val) else 0.5
+                    if (vol / vol_ma20) < vol_mult or close_pos < 0.5:
                         continue
                     ma50, ma150, ma200, ma200_20 = row.get("MA50"), row.get("MA150"), row.get("MA200"), row.get("MA200_20D_ago")
+                    pct_bot_val = row.get("Pct_From_Bottom")
+                    pct_peak_val = row.get("Pct_From_Peak")
                     if (
                         pd.notna(ma50) and pd.notna(ma150) and pd.notna(ma200) and pd.notna(ma200_20)
+                        and pd.notna(pct_bot_val) and pd.notna(pct_peak_val)
                         and (c > ma50 > ma150 > ma200 and ma200 > ma200_20)
-                        and (float(row.get("Pct_From_Bottom", 0)) >= 25.0 and float(row.get("Pct_From_Peak", -100)) >= -25.0 and rs >= min_rs)
+                        and (float(pct_bot_val) >= 25.0 and float(pct_peak_val) >= -25.0 and rs >= min_rs)
                     ):
                         vcp_res = detect_vcp_pattern(df, cur_date_obj, lookback_days=150)
                         is_valid_vcp_buy = False
@@ -852,9 +873,13 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                             priority = 2
                         candidates.append((sym, priority * 1000.0 + rs * 5.0 + (vol / vol_ma20), c, sec, rs, trade_tag, False))
                 elif can_bottom_fish:
+                    pct_day_val = row.get("Pct")
+                    close_pos_val = row.get("Close_Pos")
+                    pct_day = float(pct_day_val) if pd.notna(pct_day_val) else 0.0
+                    close_pos = float(close_pos_val) if pd.notna(close_pos_val) else 0.0
                     if (
-                        rs >= max(65, min_rs - 5) and float(row.get("Pct", 0.0)) >= 2.5
-                        and float(row.get("Close_Pos", 0.0)) >= 0.6 and pd.notna(row.get("MA10")) and c > row["MA10"]
+                        rs >= max(65, min_rs - 5) and pct_day >= 2.5
+                        and close_pos >= 0.6 and pd.notna(row.get("MA10")) and c > row["MA10"]
                         and vol_ma10 > 0 and (vol / vol_ma10) >= 1.2
                     ):
                         candidates.append((sym, 500.0 + rs * 5.0 + (vol / vol_ma10), c, sec, rs, f"Bắt Đáy Hoảng Loạn (MA200={pct_above_200:.0f}%)", True))
@@ -862,10 +887,10 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             candidates.sort(key=lambda x: x[1], reverse=True)
             buy_pow = target_equity_val - total_stock_val
             slots = max_pos - len(current_symbols)
-            for i in range(min(slots, len(candidates))):
-                if buy_pow < 10_000_000 or cash < 10_000_000:
+            bought_count = 0
+            for sym, _, price, sec, rs_val, trade_tag, is_bot_bet in candidates:
+                if bought_count >= slots or buy_pow < 10_000_000 or cash < 10_000_000:
                     break
-                sym, _, price, sec, rs_val, trade_tag, is_bot_bet = candidates[i]
                 if sec_counts.get(sec, 0) >= max_per_sector:
                     continue
                 alloc_amt = min(cash, total_nav / max_pos, buy_pow)
@@ -873,12 +898,13 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                 cost = qty * price * 1000.0 * (1.0 + fee)
                 if qty > 0 and cash >= cost:
                     cash -= cost
-                    settle_idx = min(day_idx + t_plus, total_days - 1)
+                    settle_idx = day_idx + t_plus
                     pending_stocks.append((settle_idx, sym, qty, price, cur_date_obj, sec, trade_tag, is_bot_bet))
                     pending_holdings_val += qty * price * 1000.0
                     total_stock_val += qty * price * 1000.0
                     buy_pow -= qty * price * 1000.0
                     sec_counts[sec] = sec_counts.get(sec, 0) + 1
+                    bought_count += 1
                     trades_history.append({
                         "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Lệnh": "BUY",
                         "Giá": round(price, 2), "KL": qty, "Lãi/Lỗ": 0,
@@ -926,9 +952,13 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
     final_nav = float(equity_df["NAV"].iloc[-1])
     profit = final_nav - initial_capital
     days = (all_dates[-1] - all_dates[0]).days
-    cagr = (final_nav / initial_capital) ** (365.0 / days) - 1.0 if days > 0 and initial_capital > 0 else 0.0
-    peak = equity_df["NAV"].cummax()
-    max_dd = float(((equity_df["NAV"] - peak) / peak).min()) * 100.0
+    if days > 0 and initial_capital > 0:
+        cagr = ((final_nav / initial_capital) ** (365.0 / days) - 1.0) if final_nav > 0 else -1.0
+    else:
+        cagr = 0.0
+    peak = equity_df["NAV"].cummax().replace(0, np.nan)
+    dd_series = ((equity_df["NAV"] - peak) / peak).dropna()
+    max_dd = float(dd_series.min()) * 100.0 if not dd_series.empty else 0.0
     win_trades = sum(1 for t in closed_trades if t["Lãi/Lỗ"] > 0)
     win_rate = (win_trades / len(closed_trades) * 100.0) if closed_trades else 0.0
 
