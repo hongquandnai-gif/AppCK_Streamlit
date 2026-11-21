@@ -204,6 +204,24 @@ st.markdown("""
         padding: 3px 10px;
         color: #ffffff;
     }
+
+    /* Ẩn input cầu nối sự kiện double-click (không chiếm diện tích nhưng giữ live trong DOM) */
+    div[data-testid="element-container"]:has(input[aria-label="sec_ma_dblclick_bridge"]) {
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+    }
+    div[data-testid="stTextInput"]:has(input[aria-label="sec_ma_dblclick_bridge"]) {
+        position: fixed !important;
+        top: 0 !important;
+        left: -9999px !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -671,6 +689,268 @@ def _color_vol_score(val):
         return ""
 
 
+def _render_sector_ma_interactive_table(df_show: pd.DataFrame, mode: str, selected_ind: str) -> None:
+    """
+    Render bảng Xu Hướng MA Ngành hỗ trợ nhấp đúp (double-click) trực tiếp vào từng dòng
+    để chuyển ngay sang tab Biểu Đồ Kỹ Thuật (EOD) của mã cổ phiếu tương ứng.
+    """
+    if df_show is None or df_show.empty:
+        return
+
+    cols = list(df_show.columns)
+    numeric_cols = {"% Mạnh (>MA20)", "% Yếu (<MA50)", "Tổng mã", "Δ (%)", "Giá", "% Thay đổi"}
+    ma_cols = {f"MA{w}" for w in MA_WINDOWS}
+
+    th_cells = []
+    for c_idx, col_name in enumerate(cols):
+        align = "right" if col_name in numeric_cols else "left"
+        is_num = "1" if col_name in numeric_cols else "0"
+        th_cells.append(
+            f'<th data-col="{c_idx}" data-num="{is_num}" style="text-align:{align};">'
+            f'{html.escape(str(col_name))}<span class="sort-ind"></span></th>'
+        )
+
+    body_rows = []
+    for row in df_show.to_dict("records"):
+        if mode == "all":
+            target_sym = str(row.get("Mã nổi bật") or "").strip().upper()
+            target_ind = str(row.get("Ngành") or "").strip()
+        else:
+            target_sym = str(row.get("Mã") or "").strip().upper()
+            target_ind = (
+                selected_ind
+                if (selected_ind in INDUSTRY_GROUPS and selected_ind != "Tất cả ngành")
+                else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(target_sym, "")
+            )
+
+        td_cells = []
+        for col_name in cols:
+            val = row.get(col_name)
+            align = "right" if col_name in numeric_cols else "left"
+            cell_style = ""
+            sort_val = ""
+            disp = "—"
+
+            if pd.isna(val) or val is None or (isinstance(val, str) and not val.strip()):
+                disp = "—"
+                sort_val = "-999999999" if col_name in numeric_cols else ""
+            elif col_name in ("% Mạnh (>MA20)", "% Yếu (<MA50)"):
+                fv = float(val)
+                disp = f"{fv:.1f}%"
+                sort_val = f"{fv:.6f}"
+                cell_style = _color_pct_strength(fv) if col_name == "% Mạnh (>MA20)" else _color_pct_weak(fv)
+            elif col_name == "Δ (%)":
+                fv = float(val)
+                disp = f"{fv:+.1f}%"
+                sort_val = f"{fv:.6f}"
+                cell_style = _color_signed(fv)
+            elif col_name == "% Thay đổi":
+                fv = float(val)
+                disp = f"{fv:+.2f}%"
+                sort_val = f"{fv:.6f}"
+                cell_style = _color_signed(fv)
+            elif col_name == "Giá":
+                fv = float(val)
+                disp = f"{fv:,.2f}"
+                sort_val = f"{fv:.6f}"
+                cell_style = "font-weight: 600; color: #0f172a;"
+            elif col_name == "Tổng mã":
+                iv = int(val)
+                disp = f"{iv:,}"
+                sort_val = str(iv)
+            elif col_name == "Phân loại" or col_name in ma_cols:
+                disp = str(val)
+                sort_val = disp
+                cell_style = _color_status(val)
+            elif col_name in ("Mã", "Mã nổi bật"):
+                disp = str(val)
+                sort_val = disp
+                cell_style = "font-weight: 800; color: #0284c7;"
+            elif col_name == "Ngành":
+                disp = str(val)
+                sort_val = disp
+                cell_style = "font-weight: 700; color: #0f172a;"
+            else:
+                disp = str(val)
+                sort_val = disp
+
+            td_cells.append(
+                f'<td data-sort="{html.escape(sort_val)}" style="text-align:{align}; {cell_style}">'
+                f'{html.escape(disp)}</td>'
+            )
+
+        row_title = (
+            f"Nhấp đúp để xem Biểu Đồ Kỹ Thuật (EOD) mã {target_sym}"
+            if target_sym
+            else "Không có mã cổ phiếu để mở biểu đồ"
+        )
+        clickable_cls = "ma-row clickable" if target_sym else "ma-row"
+        body_rows.append(
+            f'<tr class="{clickable_cls}" data-sym="{html.escape(target_sym)}" '
+            f'data-ind="{html.escape(target_ind)}" title="{html.escape(row_title)}">'
+            + "".join(td_cells)
+            + "</tr>"
+        )
+
+    table_html = f"""
+    <style>
+        html, body {{
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+        }}
+        .ma-wrap {{
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            overflow-x: auto;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }}
+        table.ma-tbl {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            color: #1e293b;
+        }}
+        table.ma-tbl thead th {{
+            background: #f8fafc;
+            color: #475569;
+            font-weight: 700;
+            padding: 10px 12px;
+            border-bottom: 1.5px solid #e2e8f0;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }}
+        table.ma-tbl thead th:hover {{
+            background: #f1f5f9;
+            color: #0f172a;
+        }}
+        .sort-ind {{
+            margin-left: 4px;
+            font-size: 10px;
+            color: #0284c7;
+        }}
+        table.ma-tbl tbody td {{
+            padding: 9px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            white-space: nowrap;
+        }}
+        table.ma-tbl tbody tr.ma-row {{
+            transition: background-color 0.12s ease;
+            user-select: none;
+        }}
+        table.ma-tbl tbody tr.ma-row.clickable {{
+            cursor: pointer;
+        }}
+        table.ma-tbl tbody tr.ma-row.clickable:hover {{
+            background-color: #f0f9ff;
+        }}
+        table.ma-tbl tbody tr.ma-row.selected {{
+            background-color: #e0f2fe !important;
+        }}
+        table.ma-tbl tbody tr.ma-row.opening {{
+            background-color: #bae6fd !important;
+        }}
+        table.ma-tbl tbody tr:last-child td {{
+            border-bottom: none;
+        }}
+    </style>
+    <div class="ma-wrap">
+        <table class="ma-tbl" id="secMaTbl">
+            <thead><tr>{"".join(th_cells)}</tr></thead>
+            <tbody>{"".join(body_rows)}</tbody>
+        </table>
+    </div>
+    <script>
+        (function() {{
+            const tbl = document.getElementById("secMaTbl");
+            if (!tbl) return;
+            const tbody = tbl.querySelector("tbody");
+            const headers = tbl.querySelectorAll("thead th");
+
+            function openTechnicalChart(sym, ind, rowEl) {{
+                if (!sym) return;
+                if (rowEl) rowEl.classList.add("opening");
+                const payload = sym + "|" + (ind || "") + "|" + Date.now();
+                try {{
+                    const pWin = window.parent;
+                    const pDoc = pWin.document;
+                    const inp = pDoc.querySelector('input[aria-label="sec_ma_dblclick_bridge"]');
+                    if (inp) {{
+                        const setter = Object.getOwnPropertyDescriptor(pWin.HTMLInputElement.prototype, "value").set;
+                        setter.call(inp, payload);
+                        inp.dispatchEvent(new pWin.Event("input", {{ bubbles: true }}));
+                        inp.dispatchEvent(new pWin.Event("change", {{ bubbles: true }}));
+                        setTimeout(function() {{
+                            try {{ inp.focus({{ preventScroll: true }}); }} catch (_) {{}}
+                            inp.dispatchEvent(new pWin.KeyboardEvent("keydown", {{
+                                key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true
+                            }}));
+                            inp.dispatchEvent(new pWin.KeyboardEvent("keyup", {{
+                                key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true
+                            }}));
+                            try {{ inp.blur(); }} catch (_) {{}}
+                        }}, 35);
+                        return;
+                    }}
+                }} catch (e) {{}}
+                try {{
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set("chart_sym", sym);
+                    if (ind) url.searchParams.set("chart_ind", ind);
+                    window.parent.location.href = url.toString();
+                }} catch (e2) {{}}
+            }}
+
+            tbody.addEventListener("click", function(ev) {{
+                const tr = ev.target.closest("tr.ma-row.clickable");
+                if (!tr) return;
+                tbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+                tr.classList.add("selected");
+            }});
+
+            tbody.addEventListener("dblclick", function(ev) {{
+                const tr = ev.target.closest("tr.ma-row.clickable");
+                if (!tr) return;
+                ev.preventDefault();
+                openTechnicalChart(tr.dataset.sym, tr.dataset.ind, tr);
+            }});
+
+            let sortState = {{ col: -1, asc: true }};
+            headers.forEach(function(th) {{
+                th.addEventListener("click", function() {{
+                    const colIdx = parseInt(th.dataset.col, 10);
+                    const isNum = th.dataset.num === "1";
+                    const asc = (sortState.col === colIdx) ? !sortState.asc : !isNum;
+                    sortState = {{ col: colIdx, asc: asc }};
+
+                    headers.forEach(h => h.querySelector(".sort-ind").textContent = "");
+                    th.querySelector(".sort-ind").textContent = asc ? "▲" : "▼";
+
+                    const rows = Array.from(tbody.querySelectorAll("tr"));
+                    rows.sort(function(a, b) {{
+                        const av = a.children[colIdx].dataset.sort || "";
+                        const bv = b.children[colIdx].dataset.sort || "";
+                        if (isNum) {{
+                            return asc ? (parseFloat(av) - parseFloat(bv)) : (parseFloat(bv) - parseFloat(av));
+                        }}
+                        return asc ? av.localeCompare(bv, "vi") : bv.localeCompare(av, "vi");
+                    }});
+                    rows.forEach(r => tbody.appendChild(r));
+                }});
+            }});
+        }})();
+    </script>
+    """
+    est_height = int(len(df_show) * 39 + 54)
+    components.html(table_html, height=est_height, scrolling=False)
+
+
 # ==============================================================================
 # 3. KHỞI TẠO SSI WEBSOCKET, HEADER & THANH 5 WORKSPACE PHẲNG
 # ==============================================================================
@@ -740,6 +1020,39 @@ WORKSPACES = [
 
 if "active_ws" not in st.session_state:
     st.session_state["active_ws"] = WORKSPACES[0]
+
+
+def _navigate_to_eod_chart(symbol: str, industry: str = "") -> None:
+    """Chuyển trực tiếp sang Workspace Phân Tích Biểu Đồ (EOD) với mã cổ phiếu đã chọn."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return
+    target_ind = ""
+    if industry and industry in INDUSTRY_GROUPS and sym in get_symbols_by_industry(industry, exclude_penny=False):
+        target_ind = industry
+    else:
+        mapped = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "")
+        if mapped in INDUSTRY_GROUPS and sym in get_symbols_by_industry(mapped, exclude_penny=False):
+            target_ind = mapped
+        elif sym in ALL_MAIN_INDICES:
+            target_ind = "Chỉ số"
+        else:
+            target_ind = "Tất cả ngành"
+
+    st.session_state["hist_ind"] = target_ind
+    st.session_state["hist_sym"] = sym
+    st.session_state["hist_pending_sym"] = sym
+    st.session_state["active_ws"] = "📈 Phân Tích Biểu Đồ"
+    st.rerun()
+
+
+# Hỗ trợ fallback điều hướng qua URL query params (nếu trình duyệt chặn bridge iframe)
+_qp_chart_sym = st.query_params.get("chart_sym")
+if _qp_chart_sym:
+    _qp_chart_ind = str(st.query_params.get("chart_ind") or "")
+    st.query_params.pop("chart_sym", None)
+    st.query_params.pop("chart_ind", None)
+    _navigate_to_eod_chart(str(_qp_chart_sym), _qp_chart_ind)
 
 nav_cols = st.columns([1, 1, 1, 1, 1, 0.95], gap="small", vertical_alignment="center")
 for idx, ws_name in enumerate(WORKSPACES):
@@ -1266,31 +1579,29 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                 st.session_state["sec_ma_mode"] = "group"
 
         if "sec_ma_df" in st.session_state and not st.session_state["sec_ma_df"].empty:
-            if st.session_state.get("sec_ma_mode") == "all":
+            sec_ma_mode = st.session_state.get("sec_ma_mode", "all")
+            if sec_ma_mode == "all":
                 df_show = _sync_company_col(st.session_state["sec_ma_df"], "Mã nổi bật", "Tên công ty")
             else:
                 df_show = _sync_company_col(st.session_state["sec_ma_df"], "Mã", "Tên công ty")
             csv_bytes = df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             c4.download_button("💾 Xuất CSV", data=csv_bytes, file_name=f"sector_ma_{ma_asof}.csv", mime="text/csv", width="stretch")
 
-            if st.session_state.get("sec_ma_mode") == "all":
-                styled = (
-                    df_show.style
-                    .map(_color_status, subset=["Phân loại"])
-                    .map(_color_pct_strength, subset=["% Mạnh (>MA20)"])
-                    .map(_color_pct_weak, subset=["% Yếu (<MA50)"])
-                    .map(_color_signed, subset=["Δ (%)"])
-                    .format({"% Mạnh (>MA20)": "{:.1f}%", "% Yếu (<MA50)": "{:.1f}%", "Δ (%)": "{:+.1f}%"}, na_rep="—")
-                )
-            else:
-                ma_cols = [f"MA{w}" for w in MA_WINDOWS if f"MA{w}" in df_show.columns]
-                styled = (
-                    df_show.style
-                    .map(_color_signed, subset=["% Thay đổi"])
-                    .map(_color_status, subset=ma_cols)
-                    .format({"Giá": "{:,.2f}", "% Thay đổi": "{:+.2f}%"})
-                )
-            st.dataframe(styled, width="stretch", hide_index=True, height=_auto_df_height(df_show))
+            dbl_payload = st.text_input(
+                "sec_ma_dblclick_bridge",
+                key="sec_ma_dblclick_bridge",
+                label_visibility="collapsed",
+            )
+            if dbl_payload and dbl_payload != st.session_state.get("sec_ma_last_dblclick_token"):
+                st.session_state["sec_ma_last_dblclick_token"] = dbl_payload
+                parts = dbl_payload.split("|")
+                target_sym = parts[0].strip().upper() if len(parts) >= 1 else ""
+                target_ind = parts[1].strip() if len(parts) >= 2 else ""
+                if target_sym:
+                    _navigate_to_eod_chart(target_sym, target_ind)
+
+            st.caption("💡 Nhấp đúp (double-click) vào bất kỳ dòng nào trong bảng để chuyển sang xem chi tiết **Biểu Đồ Kỹ Thuật (EOD)** của mã cổ phiếu tương ứng.")
+            _render_sector_ma_interactive_table(df_show, sec_ma_mode, ind_choice)
 
     # --- SUB-TAB 2.2: DÒNG TIỀN NGÀNH ---
     with t_mf:
@@ -1729,10 +2040,18 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
         else:
             sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
 
+        pending_sym = st.session_state.pop("hist_pending_sym", None)
+        if pending_sym:
+            if pending_sym not in sym_list:
+                sym_list = [pending_sym] + sym_list
+            st.session_state["hist_sym"] = pending_sym
+        elif st.session_state.get("hist_sym") not in sym_list:
+            st.session_state["hist_sym"] = "FPT" if "FPT" in sym_list else sym_list[0]
+
         sym_sel = c2.selectbox(
             "Mã cổ phiếu / Chỉ số",
             sym_list,
-            index=sym_list.index("FPT") if "FPT" in sym_list else 0,
+            key="hist_sym",
             format_func=_sym_label,
         )
         h_start = c3.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="h_s")
