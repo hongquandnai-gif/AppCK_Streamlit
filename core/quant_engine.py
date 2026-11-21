@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from core.constants import HARDCODED_HOSE_INDUSTRIES_MAPPING, is_penny_stock
+from core.constants import HARDCODED_HOSE_INDUSTRIES_MAPPING, get_company_name, is_penny_stock
 
 
 # ==============================================================================
@@ -346,7 +346,11 @@ def evaluate_market_ftd_step(
 # 3. CHẠY QUÉT MINERVINI & RS RATING TOÀN SÀN
 # ==============================================================================
 def run_minervini_screener(
-    raw_map: Dict[str, pd.DataFrame], start_date: date, end_date: date, min_rs: int = 70
+    raw_map: Dict[str, pd.DataFrame],
+    start_date: date,
+    end_date: date,
+    min_rs: int = 70,
+    company_names: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, pd.DataFrame], List[dict], pd.DataFrame, dict]:
     proc_map: Dict[str, pd.DataFrame] = {}
     latest_rows = []
@@ -405,6 +409,7 @@ def run_minervini_screener(
             phase_title, _, _ = evaluate_stock_phase(r)
             screened.append({
                 "Mã CP": sym,
+                "Tên Công Ty": get_company_name(sym, company_names, fallback="—"),
                 "Ngành": HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
                 "Giá": round(float(c), 2),
                 "RS Rating": int(rs),
@@ -558,6 +563,7 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
     use_power_play = p["use_power_play"]
     filter_top_sectors = p.get("filter_top_sectors", False)
     top_sectors_n = p.get("top_sectors", 5)
+    company_names = p.get("company_names")
 
     use_dd_shield = p["use_dd_shield"]
     use_top_climax = p["use_top_climax"]
@@ -748,13 +754,14 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
             active_holdings_val -= qty * price * 1000.0
             vcp_note = holdings[sym].get("vcp_tag", "")
             pp_note = " [PP]" if holdings[sym].get("is_power_play") else ""
+            comp_name = get_company_name(sym, company_names, fallback="—")
             trades_history.append({
-                "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Lệnh": "SELL",
+                "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Tên Công Ty": comp_name, "Lệnh": "SELL",
                 "Giá": round(price, 2), "KL": qty, "Lãi/Lỗ": round(proceeds - cost_basis, 0),
                 "Ghi chú": f"{vcp_note}{pp_note} (T+{t_plus})".strip(), "Lý do": reason,
             })
             closed_trades.append({
-                "Mã": sym, "Ngày Mua": holdings[sym]["date"].strftime("%d/%m/%Y"),
+                "Mã": sym, "Tên Công Ty": comp_name, "Ngày Mua": holdings[sym]["date"].strftime("%d/%m/%Y"),
                 "Ngày Bán": current_date.strftime("%d/%m/%Y"),
                 "Giá Mua": round(buy_price, 2), "Giá Bán": round(price, 2), "KL": qty,
                 "Lãi/Lỗ": round(proceeds - cost_basis, 0),
@@ -792,13 +799,14 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                     else:
                         del holdings[sym]
                         note_txt = f"Thoát hết (T+{t_plus})"
+                    comp_name = get_company_name(sym, company_names, fallback="—")
                     trades_history.append({
-                        "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Lệnh": "SELL",
+                        "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Tên Công Ty": comp_name, "Lệnh": "SELL",
                         "Giá": round(price, 2), "KL": sell_qty, "Lãi/Lỗ": round(proceeds - cost_basis, 0),
                         "Ghi chú": note_txt, "Lý do": trim_reason,
                     })
                     closed_trades.append({
-                        "Mã": sym, "Ngày Mua": pos["date"].strftime("%d/%m/%Y"),
+                        "Mã": sym, "Tên Công Ty": comp_name, "Ngày Mua": pos["date"].strftime("%d/%m/%Y"),
                         "Ngày Bán": current_date.strftime("%d/%m/%Y"),
                         "Giá Mua": round(pos["price"], 2), "Giá Bán": round(price, 2), "KL": sell_qty,
                         "Lãi/Lỗ": round(proceeds - cost_basis, 0),
@@ -906,7 +914,9 @@ def run_hybrid_backtest(raw_map: Dict[str, pd.DataFrame], p: dict) -> dict:
                     sec_counts[sec] = sec_counts.get(sec, 0) + 1
                     bought_count += 1
                     trades_history.append({
-                        "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym, "Lệnh": "BUY",
+                        "Ngày": current_date.strftime("%d/%m/%Y"), "Mã": sym,
+                        "Tên Công Ty": get_company_name(sym, company_names, fallback="—"),
+                        "Lệnh": "BUY",
                         "Giá": round(price, 2), "KL": qty, "Lãi/Lỗ": 0,
                         "Ghi chú": f"Hàng về T+{t_plus}", "Lý do": f"{trade_tag} | RS={rs_val}",
                     })

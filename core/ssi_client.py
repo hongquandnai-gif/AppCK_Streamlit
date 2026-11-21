@@ -17,6 +17,7 @@ import websocket
 from core.constants import (
     HARDCODED_HOSE_INDUSTRIES_MAPPING,
     INDEX_SYMBOLS,
+    SYMBOL_TO_COMPANY,
     is_penny_stock,
 )
 
@@ -124,6 +125,71 @@ def _first_non_negative(*vals) -> Optional[float]:
 # ==============================================================================
 # 1. DANH SÁCH MÃ & BẢNG GIÁ REALTIME TOÀN SÀN TỪ SSI IBOARD
 # ==============================================================================
+def _extract_ssi_company_name(item: dict, sym: str) -> str:
+    raw = (
+        item.get("companyNameVi")
+        or item.get("companyName")
+        or item.get("companyNameEn")
+        or item.get("shortName")
+        or ""
+    )
+    clean = " ".join(str(raw).split())
+    if clean and clean.upper() != sym:
+        return clean
+    return SYMBOL_TO_COMPANY.get(sym, sym)
+
+
+def _fetch_exchange_company_names(exchange: str) -> Dict[str, str]:
+    url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
+    names: Dict[str, str] = {}
+    try:
+        resp = requests.get(url, headers=SSI_HEADERS, timeout=10)
+        if resp.status_code == 200:
+            payload = resp.json()
+            items = payload.get("data", []) if isinstance(payload, dict) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
+                if len(sym) == 3 and sym.isalnum():
+                    raw = (
+                        item.get("companyNameVi")
+                        or item.get("companyName")
+                        or item.get("companyNameEn")
+                        or item.get("shortName")
+                        or ""
+                    )
+                    clean = " ".join(str(raw).split())
+                    if clean and clean.upper() != sym:
+                        names[sym] = clean
+    except Exception:
+        pass
+    return names
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_ssi_company_name_map() -> Dict[str, str]:
+    """
+    Đồng bộ bản đồ Tên công ty cho toàn bộ mã chứng khoán (HOSE + HNX + UPCOM)
+    từ SSI iBoard, kết hợp fallback chuẩn tiếng Việt cho mọi mã & chỉ số.
+    """
+    merged: Dict[str, str] = dict(SYMBOL_TO_COMPANY)
+    exchange_results: Dict[str, Dict[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futs = {pool.submit(_fetch_exchange_company_names, ex): ex for ex in ("upcom", "hnx", "hose")}
+        for fut in as_completed(futs):
+            ex = futs[fut]
+            try:
+                exchange_results[ex] = fut.result()
+            except Exception:
+                exchange_results[ex] = {}
+
+    # Ưu tiên HOSE > HNX > UPCOM nếu có trùng mã
+    for ex in ("upcom", "hnx", "hose"):
+        merged.update(exchange_results.get(ex, {}))
+    return merged
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
     url = f"https://iboard-query.ssi.com.vn/stock/exchange/{exchange.lower()}"
@@ -137,14 +203,14 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
                 if not isinstance(item, dict):
                     continue
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
-                if len(sym) == 3 and sym.isalpha():
+                if len(sym) == 3 and sym.isalnum():
                     ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(
                         sym,
                         "Penny" if is_penny_stock(sym) else (item.get("industryName") or "Khác")
                     )
                     stock_dict[sym] = {
                         "symbol": sym,
-                        "companyName": item.get("companyNameVi") or item.get("companyNameEn") or sym,
+                        "companyName": _extract_ssi_company_name(item, sym),
                         "industry": ind,
                         "exchange": exchange.upper(),
                         "refPrice": _to_thousand_vnd(item.get("refPrice")),
@@ -159,7 +225,7 @@ def fetch_ssi_stock_list(exchange: str = "hose") -> Dict[str, dict]:
             if ind != "Chỉ số" and len(sym) == 3:
                 stock_dict[sym] = {
                     "symbol": sym,
-                    "companyName": sym,
+                    "companyName": SYMBOL_TO_COMPANY.get(sym, sym),
                     "industry": ind,
                     "exchange": "HOSE",
                     "refPrice": 0.0,
@@ -191,7 +257,7 @@ def fetch_ssi_realtime_board(exchange: str = "hose") -> Dict[str, dict]:
                 if not isinstance(item, dict):
                     continue
                 sym = str(item.get("stockSymbol") or item.get("code") or "").strip().upper()
-                if len(sym) != 3 or not sym.isalpha():
+                if len(sym) != 3 or not sym.isalnum():
                     continue
 
                 ref_raw = _first_positive(item.get("refPrice"), item.get("priorClosePrice"))

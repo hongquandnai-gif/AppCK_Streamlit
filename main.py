@@ -20,6 +20,8 @@ from core.constants import (
     INDUSTRY_GROUPS,
     MA_COLORS,
     MA_WINDOWS,
+    format_symbol_label,
+    get_company_name,
     get_symbols_by_industry,
     is_penny_stock,
 )
@@ -35,6 +37,7 @@ from core.quant_engine import (
 from core.ssi_client import (
     clear_batch_cache,
     fetch_batch_ohlcv_ssi,
+    fetch_ssi_company_name_map,
     fetch_ssi_ohlcv_cached,
     fetch_ssi_stock_list,
     get_ssi_ws_manager,
@@ -296,6 +299,8 @@ def build_vn_treemap(df_tm: pd.DataFrame, size_mode: str = "Giá trị GD (Tỷ)
             gtgd = float(row.get("GTGD (Tỷ)", 0.0))
             klgd = float(row.get("KLGD", 0.0))
             px_val = float(row["Giá"])
+            comp_raw = str(row.get("Tên công ty") or "").strip()
+            comp_line = f"{html.escape(comp_raw)}<br>" if (comp_raw and comp_raw.upper() != sym.upper() and comp_raw != "—") else ""
 
             ids.append(f"{sec_id}_{sym}")
             labels.append(sym)
@@ -305,6 +310,7 @@ def build_vn_treemap(df_tm: pd.DataFrame, size_mode: str = "Giá trị GD (Tỷ)
             texts.append(f"<b>{sym}</b><br>{pct:+.2f}%")
             hovers.append(
                 f"<b>{sym}</b> ({ind})<br>"
+                f"{comp_line}"
                 f"Giá đóng cửa: <b>{px_val:,.2f}</b><br>"
                 f"Thay đổi: <b>{pct:+.2f}%</b><br>"
                 f"GTGD: <b>{gtgd:,.2f} Tỷ VNĐ</b><br>"
@@ -463,6 +469,7 @@ def _render_dynamic_ohlc_chart(
     is_intraday: bool = False,
     height: int = 600,
     chart_id: str = "ohlc_chart",
+    company_name: str = "",
 ):
     """
     Render biểu đồ Plotly kèm thanh OHLC + % tăng giảm + MA tự động thay đổi
@@ -510,6 +517,10 @@ def _render_dynamic_ohlc_chart(
     fig_json = fig.to_json().replace("</", "<\\/")
     rec_json = json.dumps(records, ensure_ascii=False).replace("</", "<\\/")
     safe_sym = json.dumps(html.escape(str(sym)), ensure_ascii=False).replace("</", "<\\/")
+    comp_clean = str(company_name or "").strip()
+    if comp_clean.upper() == str(sym).strip().upper() or comp_clean == "—":
+        comp_clean = ""
+    safe_comp = json.dumps(html.escape(comp_clean), ensure_ascii=False).replace("</", "<\\/")
     dom_id = f"plt_{chart_id}"
     bar_id = f"bar_{chart_id}"
 
@@ -524,6 +535,7 @@ def _render_dynamic_ohlc_chart(
             const figData = {fig_json};
             const bars = {rec_json};
             const sym = {safe_sym};
+            const comp = {safe_comp};
             const barEl = document.getElementById("{bar_id}");
             const pltEl = document.getElementById("{dom_id}");
 
@@ -537,9 +549,10 @@ def _render_dynamic_ohlc_chart(
                         b.mas.map(m => `<span style="color:${{m.color}}; font-weight:700; margin-right:12px;">${{m.name}}: ${{m.val}}</span>`).join("") +
                         "</div>";
                 }}
+                const compHtml = comp ? ` <span style="color:#475569; font-weight:600;">— ${{comp}}</span>` : "";
                 barEl.innerHTML =
                     `<div>` +
-                    `<b>${{sym}}</b> <span style="color:#64748b;">(${{b.dt}})</span> &nbsp;|&nbsp; ` +
+                    `<b>${{sym}}</b>${{compHtml}} <span style="color:#64748b;">(${{b.dt}})</span> &nbsp;|&nbsp; ` +
                     `O: <b style="color:${{b.clr}}">${{b.o}}</b> &nbsp; ` +
                     `H: <b style="color:${{b.clr}}">${{b.h}}</b> &nbsp; ` +
                     `L: <b style="color:${{b.clr}}">${{b.l}}</b> &nbsp; ` +
@@ -663,6 +676,41 @@ def _color_vol_score(val):
 # ==============================================================================
 ws_mgr = get_ssi_ws_manager()
 ssi_stocks_meta = fetch_ssi_stock_list("hose")
+company_name_map = dict(fetch_ssi_company_name_map())
+for _sym_k, _meta_v in ssi_stocks_meta.items():
+    _cn = str(_meta_v.get("companyName") or "").strip()
+    if _cn and _cn.upper() != _sym_k and _sym_k not in company_name_map:
+        company_name_map[_sym_k] = _cn
+st.session_state["company_name_map"] = company_name_map
+
+
+def _company_name(symbol: str, fallback: str = "") -> str:
+    return get_company_name(symbol, company_map=company_name_map, fallback=fallback)
+
+
+def _sym_label(symbol: str) -> str:
+    return format_symbol_label(symbol, company_map=company_name_map)
+
+
+def _sync_company_col(
+    df: pd.DataFrame,
+    sym_col: str,
+    comp_col: str = "Tên công ty",
+    fallback: str = "—",
+) -> pd.DataFrame:
+    """Đảm bảo cột tên công ty luôn được đồng bộ từ nguồn chuẩn và nằm liền kề cột mã."""
+    if df is None or df.empty or sym_col not in df.columns:
+        return df
+    out = df.copy()
+    names = out[sym_col].map(lambda s: _company_name(str(s), fallback=fallback) if pd.notna(s) and str(s).strip() else fallback)
+    if comp_col in out.columns:
+        out[comp_col] = names
+    else:
+        insert_pos = out.columns.get_loc(sym_col) + 1
+        out.insert(insert_pos, comp_col, names)
+    return out
+
+
 TODAY_VN = vn_today()
 vn_clock = vn_now().strftime("%d/%m/%Y %H:%M")
 
@@ -828,15 +876,17 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                     line_col = "#10b981" if delta > 0 else ("#ef4444" if delta < 0 else "#d97706")
                     x_lbls = _trading_x_labels(plot_series.index, is_intraday=is_intraday_mode)
 
+                    idx_comp = _company_name(sym)
+                    idx_title = f"<b>{sym}</b> — {html.escape(idx_comp)}" if idx_comp else f"<b>{sym}</b>"
                     idx_hovers = []
                     for ts, r_px in zip(plot_series.index, plot_series["Close"]):
                         t_fmt = ts.strftime("%d/%m %H:%M" if is_intraday_mode else "%d/%m/%Y")
                         if prev_close and prev_close > 0:
                             d_pt = float(r_px) - prev_close
                             p_pt = d_pt / prev_close * 100.0
-                            idx_hovers.append(f"<b>{sym}</b> • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b> ({d_pt:+.2f} | {p_pt:+.2f}%)")
+                            idx_hovers.append(f"{idx_title} • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b> ({d_pt:+.2f} | {p_pt:+.2f}%)")
                         else:
-                            idx_hovers.append(f"<b>{sym}</b> • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b>")
+                            idx_hovers.append(f"{idx_title} • {t_fmt}<br>Điểm: <b>{float(r_px):,.2f}</b>")
 
                     fig_idx.add_trace(
                         go.Scatter(
@@ -857,6 +907,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                         label=f"{sym} ({trade_date_str})",
                         value=f"{last_px:,.2f}",
                         delta=f"{delta:+.2f} ({pct:+.2f}%)",
+                        help=_company_name(sym) or None,
                     )
 
             _style_chart(fig_idx, height=max(420, n_rows * 240), categorical_x=True)
@@ -913,6 +964,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                             ind = "Penny" if is_penny_stock(sym) else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác")
                             rows_tm.append({
                                 "Mã": sym,
+                                "Tên công ty": _company_name(sym),
                                 "Ngành": ind,
                                 "GTGD (Tỷ)": round(c_now * vol / 1e6, 2),
                                 "KLGD": round(vol, 0),
@@ -923,8 +975,9 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                 st.session_state["tm_hist_date"] = tm_date
 
             if "tm_hist_df" in st.session_state and not st.session_state["tm_hist_df"].empty:
+                df_tm_hist_sync = _sync_company_col(st.session_state["tm_hist_df"], "Mã", "Tên công ty", fallback="")
                 st.plotly_chart(
-                    build_vn_treemap(st.session_state["tm_hist_df"], size_mode=tm_size_mode),
+                    build_vn_treemap(df_tm_hist_sync, size_mode=tm_size_mode),
                     width="stretch", key="tm_hist_chart",
                 )
             else:
@@ -966,6 +1019,7 @@ if workspace == "🌐 Toàn Cảnh Thị Trường":
                     if gtgd_val > 0 or klgd_val > 0:
                         rows_live.append({
                             "Mã": sym,
+                            "Tên công ty": _company_name(sym),
                             "Ngành": ind,
                             "GTGD (Tỷ)": gtgd_val,
                             "KLGD": klgd_val,
@@ -1178,6 +1232,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                         "Ngành": ind, "Phân loại": lbl,
                         "% Mạnh (>MA20)": pct_s, "% Yếu (<MA50)": pct_w,
                         "Tổng mã": g["tot"], "Mã nổi bật": g["hl"],
+                        "Tên công ty": _company_name(g["hl"], fallback="—") if g["hl"] else "—",
                         "MA tham chiếu": "MA20",
                         "Δ (%)": round(g["best_d"], 1) if g["hl"] else np.nan,
                     })
@@ -1193,7 +1248,7 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                         c_now = float(df_s["Close"].iloc[-1])
                         c_prev = float(df_s["Close"].iloc[-2]) if len(df_s) >= 2 else c_now
                         pct_chg = round((c_now / c_prev - 1) * 100, 2) if c_prev > 0 else 0.0
-                        item = {"Mã": s, "Giá": round(c_now, 2), "% Thay đổi": pct_chg}
+                        item = {"Mã": s, "Tên công ty": _company_name(s, fallback="—"), "Giá": round(c_now, 2), "% Thay đổi": pct_chg}
                         score = 0
                         for w in MA_WINDOWS:
                             if len(df_s) >= w:
@@ -1211,7 +1266,10 @@ elif workspace == "🧭 Sóng Ngành & Dòng Tiền":
                 st.session_state["sec_ma_mode"] = "group"
 
         if "sec_ma_df" in st.session_state and not st.session_state["sec_ma_df"].empty:
-            df_show = st.session_state["sec_ma_df"]
+            if st.session_state.get("sec_ma_mode") == "all":
+                df_show = _sync_company_col(st.session_state["sec_ma_df"], "Mã nổi bật", "Tên công ty")
+            else:
+                df_show = _sync_company_col(st.session_state["sec_ma_df"], "Mã", "Tên công ty")
             csv_bytes = df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             c4.download_button("💾 Xuất CSV", data=csv_bytes, file_name=f"sector_ma_{ma_asof}.csv", mime="text/csv", width="stretch")
 
@@ -1397,7 +1455,9 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     brk = (v > min_v) and (v_sc > 1.0)
                     sig = "ĐẠT (Full)" if (full and brk) else ("Chờ Vol" if full else ("Nổ Vol (Hồi)" if brk else "Tích lũy"))
                     stk_rows.append({
-                        "Mã CP": sym, "Ngành": HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
+                        "Mã CP": sym,
+                        "Tên Công Ty": _company_name(sym, fallback="—"),
+                        "Ngành": HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
                         "Giá": round(c, 2), "Volume": int(v), "Hệ Số Vol": round(v_sc, 2),
                         "Tín Hiệu": sig, "_full": full,
                     })
@@ -1426,12 +1486,13 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
             with col_s2:
                 st.markdown("#### 🚀 Top Cổ Phiếu Nổi Bật")
                 if not rr["stk"].empty:
+                    df_radar_stk = _sync_company_col(rr["stk"], "Mã CP", "Tên Công Ty")
                     st.dataframe(
-                        rr["stk"].style
+                        df_radar_stk.style
                         .map(_color_vol_score, subset=["Hệ Số Vol"])
                         .map(_color_status, subset=["Tín Hiệu"])
                         .format({"Giá": "{:,.2f}", "Volume": "{:,.0f}", "Hệ Số Vol": "{:.2f}x"}),
-                        width="stretch", hide_index=True, height=_auto_df_height(rr["stk"]),
+                        width="stretch", hide_index=True, height=_auto_df_height(df_radar_stk),
                     )
 
     # --- SUB-TAB 3.2: MINERVINI & VCP PRO ---
@@ -1451,7 +1512,9 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                     _progress_cb=lambda d, t: prog.progress(int(d / t * 100)),
                 )
                 prog.empty()
-                proc_map, screened, df_breadth, stats_sum = run_minervini_screener(raw_m, min_start, min_end, int(min_rs))
+                proc_map, screened, df_breadth, stats_sum = run_minervini_screener(
+                    raw_m, min_start, min_end, int(min_rs), company_names=company_name_map
+                )
                 st.session_state["min_res"] = {
                     "proc_map": proc_map, "screened": screened,
                     "breadth": df_breadth, "stats": stats_sum, "end_date": min_end,
@@ -1479,7 +1542,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
 
             with st1:
                 if screened:
-                    df_sc = pd.DataFrame(screened)
+                    df_sc = _sync_company_col(pd.DataFrame(screened), "Mã CP", "Tên Công Ty")
                     styled_sc = (
                         df_sc.style
                         .map(_color_rs, subset=["RS Rating"])
@@ -1494,8 +1557,13 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 if proc_map:
                     default_sym = screened[0]["Mã CP"] if screened else sorted(list(proc_map.keys()))[0]
                     all_m_syms = sorted(list(proc_map.keys()))
-                    sc_sel, _ = st.columns([1.2, 4.8])
-                    diag_sym = sc_sel.selectbox("Chọn cổ phiếu kiểm tra", all_m_syms, index=all_m_syms.index(default_sym))
+                    sc_sel, _ = st.columns([2.4, 3.6])
+                    diag_sym = sc_sel.selectbox(
+                        "Chọn cổ phiếu kiểm tra",
+                        all_m_syms,
+                        index=all_m_syms.index(default_sym),
+                        format_func=_sym_label,
+                    )
                     df_d = proc_map[diag_sym]
                     df_d = df_d[df_d.index.date <= mr["end_date"]]
                     if df_d.empty:
@@ -1510,11 +1578,15 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         stt_txt = "🟢 Trên" if close_val > float(ma_val) else "🔴 Dưới"
                         return f"- Giá vs {label} (`{float(ma_val):,.2f}`): **{stt_txt}**"
 
+                    diag_comp = _company_name(diag_sym)
+                    diag_ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(diag_sym, "Khác")
                     col_info, col_chart = st.columns([1.2, 2.8])
                     with col_info:
+                        comp_hdr = f"<div style='font-size:13px; color:#334155; font-weight:700; margin-bottom:6px;'>🏢 {html.escape(diag_sym)}{(' — ' + html.escape(diag_comp)) if diag_comp else ''} <span style='color:#64748b; font-weight:500;'>({html.escape(diag_ind)})</span></div>"
                         st.markdown(
                             f"<div style='padding:12px; background:#ffffff; border-radius:8px; "
                             f"border:1px solid #e2e8f0; border-left:4px solid {p_col};'>"
+                            f"{comp_hdr}"
                             f"<b style='color:{p_col}; font-size:15px;'>{html.escape(p_title)}</b><br>{html.escape(p_desc)}</div>",
                             unsafe_allow_html=True,
                         )
@@ -1553,6 +1625,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                             fig_vcp, sub_p, diag_sym,
                             prev_close_series=sub_p["PrevClose"],
                             ma_info=vcp_mas, is_intraday=False, height=420, chart_id="vcp",
+                            company_name=diag_comp,
                         )
 
             with st3:
@@ -1602,6 +1675,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                         if c0 > 0 and lmin > 0 and hmax > 0:
                             g_rows.append({
                                 "Mã CP": sym,
+                                "Tên Công Ty": _company_name(sym, fallback="—"),
                                 "Nhóm Ngành": "Penny" if g_ind == "Penny" else HARDCODED_HOSE_INDUSTRIES_MAPPING.get(sym, "Khác"),
                                 "% Thay Đổi": round((cl - c0) / c0 * 100.0, 2),
                                 "% Tăng từ Đáy": round((cl - lmin) / lmin * 100.0, 2),
@@ -1612,7 +1686,7 @@ elif workspace == "🎯 Lọc Cổ Phiếu Đột Phá":
                 st.session_state["gainers_df"] = pd.DataFrame(g_rows)
 
         if "gainers_df" in st.session_state and not st.session_state["gainers_df"].empty:
-            df_g = st.session_state["gainers_df"].copy()
+            df_g = _sync_company_col(st.session_state["gainers_df"], "Mã CP", "Tên Công Ty")
             if g_rank == "% Thay Đổi":
                 df_g = df_g.sort_values("% Thay Đổi", ascending=False)
             elif g_rank == "% Hồi từ Đáy":
@@ -1646,7 +1720,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
 
     # --- SUB-TAB 4.1: BIỂU ĐỒ KỸ THUẬT EOD ---
     with t_eod:
-        c1, c2, c3, c4, c5 = st.columns([1.4, 1.1, 1.1, 1.1, 1.0], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5 = st.columns([1.2, 2.0, 1.0, 1.0, 0.9], vertical_alignment="bottom")
         ind_sel = c1.selectbox("Nhóm ngành", INDUSTRY_GROUPS, key="hist_ind")
         if ind_sel == "Chỉ số":
             sym_list = ALL_MAIN_INDICES + [s for s in get_symbols_by_industry("Chỉ số") if s not in ALL_MAIN_INDICES]
@@ -1655,7 +1729,12 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
         else:
             sym_list = get_symbols_by_industry(ind_sel, exclude_penny=False)
 
-        sym_sel = c2.selectbox("Mã cổ phiếu / Chỉ số", sym_list, index=sym_list.index("FPT") if "FPT" in sym_list else 0)
+        sym_sel = c2.selectbox(
+            "Mã cổ phiếu / Chỉ số",
+            sym_list,
+            index=sym_list.index("FPT") if "FPT" in sym_list else 0,
+            format_func=_sym_label,
+        )
         h_start = c3.date_input("Từ ngày", value=TODAY_VN - timedelta(days=365), key="h_s")
         h_end = c4.date_input("Đến ngày", value=TODAY_VN, key="h_e")
         h_tf = c5.selectbox("Khung", ["1 Ngày", "1 Tuần", "1 Tháng"])
@@ -1741,6 +1820,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                 fig_c, plot_df, sym_sel,
                 prev_close_series=plot_df["PrevClose"],
                 ma_info=ma_info_list, is_intraday=False, height=580, chart_id="eod",
+                company_name=_company_name(sym_sel),
             )
 
         @st.fragment(run_every=5)
@@ -1754,12 +1834,23 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
 
     # --- SUB-TAB 4.2: KHỚP LỆNH TRONG PHIÊN (INTRADAY) ---
     with t_intra:
-        c1, c2, c3, c4, _ = st.columns([1.1, 1.1, 1.0, 1.0, 1.8], vertical_alignment="bottom")
+        c1, c2, c3, c4, c5 = st.columns([0.9, 1.05, 0.9, 0.95, 2.2], vertical_alignment="bottom")
         in_sym = c1.text_input("Mã CP / Chỉ số", value="FPT").strip().upper()
         in_date = c2.date_input("Ngày khớp lệnh", value=TODAY_VN, key="in_date")
         in_tf = c3.selectbox("Khung nến", ["1", "5", "15", "30", "60"], format_func=lambda x: f"{x} phút")
         if c4.button("🔄 Cập nhật", type="primary", width="stretch", key="btn_intra_ref"):
             st.cache_data.clear()
+        if in_sym:
+            in_comp = _company_name(in_sym)
+            in_ind = HARDCODED_HOSE_INDUSTRIES_MAPPING.get(in_sym, ssi_stocks_meta.get(in_sym, {}).get("industry", ""))
+            ind_badge = f" • <span style='color:#0284c7;'>{html.escape(in_ind)}</span>" if in_ind else ""
+            comp_txt = html.escape(in_comp) if in_comp else "Chưa có tên công ty"
+            c5.markdown(
+                f"<div style='background:#ffffff; border:1px solid #e2e8f0; border-left:4px solid #0284c7; "
+                f"border-radius:8px; padding:7px 12px; font-size:13px; color:#0f172a;'>"
+                f"<b>🏢 {html.escape(in_sym)}</b> — {comp_txt}{ind_badge}</div>",
+                unsafe_allow_html=True,
+            )
 
         def _render_intraday_body():
             if not in_sym:
@@ -1802,6 +1893,7 @@ elif workspace == "📈 Phân Tích Biểu Đồ":
                 _render_dynamic_ohlc_chart(
                     fig_in, df_in, in_sym,
                     is_intraday=True, height=450, chart_id="intraday",
+                    company_name=_company_name(in_sym),
                 )
 
         @st.fragment(run_every=5)
@@ -1890,8 +1982,13 @@ elif workspace == "💼 Danh Mục & Backtest":
                     port_file.write_text(json.dumps(st.session_state["portfolio_data"], ensure_ascii=False, indent=2), encoding="utf-8")
                     st.rerun()
 
+            if new_sym:
+                new_comp = _company_name(new_sym)
+                if new_comp:
+                    st.caption(f"🏢 **{new_sym}** — {new_comp}")
+
             if st.session_state["portfolio_data"]:
-                del_opts = [f"#{i}: {h['symbol']} ({h['qty']:,} CP @ {h['buy_price']})" for i, h in enumerate(st.session_state["portfolio_data"])]
+                del_opts = [f"#{i}: {_sym_label(h['symbol'])} ({h['qty']:,} CP @ {h['buy_price']})" for i, h in enumerate(st.session_state["portfolio_data"])]
                 dc1, dc2 = st.columns([3, 1], vertical_alignment="bottom")
                 del_sel = dc1.selectbox("Chọn vị thế cần xóa", del_opts)
                 if dc2.button("🗑️ Xóa vị thế", width="stretch"):
@@ -1978,7 +2075,8 @@ elif workspace == "💼 Danh Mục & Backtest":
                     reco = "NẮM GIỮ (Theo dõi)"
 
                 rows_p.append({
-                    "Mã": sym, "Ngày mua": h["buy_date"], "Giá mua": bp, "KL": qty,
+                    "Mã": sym, "Tên công ty": _company_name(sym, fallback="—"),
+                    "Ngày mua": h["buy_date"], "Giá mua": bp, "KL": qty,
                     "Số phiên": days_held, "Giá hiện tại": round(last_px, 2),
                     "Lãi/Lỗ (VNĐ)": round(pl_vnd, 0), "% Lãi/Lỗ": round(pl_pct, 2),
                     "Hôm nay (VNĐ)": round(today_pl, 0), "_val": row_val,
@@ -1998,7 +2096,7 @@ elif workspace == "💼 Danh Mục & Backtest":
             k4.metric("Tổng NAV (Gồm Tiền Mặt)", f"{nav_all:,.0f} đ")
 
             df_p = pd.DataFrame(rows_p)[
-                ["Mã", "Ngày mua", "Giá mua", "KL", "Số phiên", "Giá hiện tại", "Lãi/Lỗ (VNĐ)", "% Lãi/Lỗ", "Hôm nay (VNĐ)", "Tỷ trọng (%)", "Khuyến nghị tự động", "Ghi chú"]
+                ["Mã", "Tên công ty", "Ngày mua", "Giá mua", "KL", "Số phiên", "Giá hiện tại", "Lãi/Lỗ (VNĐ)", "% Lãi/Lỗ", "Hôm nay (VNĐ)", "Tỷ trọng (%)", "Khuyến nghị tự động", "Ghi chú"]
             ]
             styled_p = (
                 df_p.style
@@ -2103,6 +2201,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                         "dd_cancel_pct": float(bt_dd_cancel), "t_low": 3, "t_med": 5, "t_high": 7, "t_crit": 9,
                         "use_top_climax": bt_climax, "climax_breadth_thresh": float(bt_climax_th),
                         "use_bottom_fishing": bt_bot_fish, "panic_ma200_thresh": float(bt_p200), "panic_bot52_thresh": float(bt_p52),
+                        "company_names": company_name_map,
                     }
                     with st.spinner("Đang chạy mô phỏng chiến lược Hybrid..."):
                         bt_out = run_hybrid_backtest(raw_bt, params)
@@ -2151,6 +2250,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                 with sub_t1:
                     df_tr = res["trades"].iloc[::-1] if not res["trades"].empty else pd.DataFrame()
                     if not df_tr.empty:
+                        df_tr = _sync_company_col(df_tr, "Mã", "Tên Công Ty")
                         st.dataframe(
                             df_tr.style
                             .map(_color_status, subset=["Lệnh"])
@@ -2163,6 +2263,7 @@ elif workspace == "💼 Danh Mục & Backtest":
                 with sub_t2:
                     df_cl = res["closed"].iloc[::-1] if not res["closed"].empty else pd.DataFrame()
                     if not df_cl.empty:
+                        df_cl = _sync_company_col(df_cl, "Mã", "Tên Công Ty")
                         st.dataframe(
                             df_cl.style
                             .map(_color_signed, subset=["Lãi/Lỗ", "% Lãi/Lỗ"])

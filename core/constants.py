@@ -1,4 +1,5 @@
 # ========================= app/constants.py =========================
+from __future__ import annotations
 
 # ============================================================
 # =============== HẰNG SỐ / DỮ LIỆU NGÀNH HOSE ===============
@@ -195,14 +196,307 @@ ALL_SYMBOLS_WITH_PLACEHOLDER = ["Chọn mã..."] + ALL_SYMBOLS_FROM_MAP
 MA_COLORS = {10: "#1f77b4", 20: "#ff7f0e", 50: "#2ca02c", 100: "#d62728", 200: "#9467bd"}
 MA_WINDOWS = [10, 20, 50, 100, 200]
 
-SYMBOL_TO_COMPANY = {
-    "FPT": "FPT Corporation",
-    "MWG": "Mobile World Investment",
-    "PNJ": "Phu Nhuan Jewelry",
-    "HPG": "Hoa Phat Group",
-    "VNM": "Vinamilk",
-    "GAS": "PV Gas",
-    "VCB": "Vietcombank",
-    "VIC": "Vingroup",
-    "VHM": "Vinhomes"
+SYMBOL_TO_COMPANY: dict[str, str] = {
+    # ------------------ Chỉ số ------------------
+    "VNINDEX": "Chỉ số VN-Index (Sàn HOSE)",
+    "VN30": "Chỉ số VN30 (Top 30 HOSE)",
+    "HNX": "Chỉ số HNX-Index (Sàn HNX)",
+    "HNXINDEX": "Chỉ số HNX-Index (Sàn HNX)",
+    "UPCOM": "Chỉ số UPCoM-Index (Sàn UPCoM)",
+    "HNXUPCOMINDEX": "Chỉ số UPCoM-Index (Sàn UPCoM)",
+    "VNMID": "Chỉ số VNMidcap (Vốn hóa vừa)",
+    "VNSMALL": "Chỉ số VNSmallcap (Vốn hóa nhỏ)",
+    "VNSML": "Chỉ số VNSmallcap (Vốn hóa nhỏ)",
+    "VN100": "Chỉ số VN100 (Top 100 HOSE)",
+    "VNALL": "Chỉ số VNAllshare (Toàn sàn HOSE)",
+
+    # ------------------ Ngân hàng ------------------
+    "VCB": "Ngân hàng TMCP Ngoại thương Việt Nam (Vietcombank)",
+    "BID": "Ngân hàng TMCP Đầu tư và Phát triển Việt Nam (BIDV)",
+    "CTG": "Ngân hàng TMCP Công Thương Việt Nam (VietinBank)",
+    "MBB": "Ngân hàng TMCP Quân Đội (MBBank)",
+    "TCB": "Ngân hàng TMCP Kỹ thương Việt Nam (Techcombank)",
+    "VPB": "Ngân hàng TMCP Việt Nam Thịnh Vượng (VPBank)",
+    "STB": "Ngân hàng TMCP Sài Gòn Thương Tín (Sacombank)",
+    "HDB": "Ngân hàng TMCP Phát triển TP.HCM (HDBank)",
+    "ACB": "Ngân hàng TMCP Á Châu (ACB)",
+    "LPB": "Ngân hàng TMCP Lộc Phát Việt Nam (LPBank)",
+    "EIB": "Ngân hàng TMCP Xuất Nhập Khẩu Việt Nam (Eximbank)",
+    "OCB": "Ngân hàng TMCP Phương Đông (OCB)",
+    "SHB": "Ngân hàng TMCP Sài Gòn - Hà Nội (SHB)",
+    "TPB": "Ngân hàng TMCP Tiên Phong (TPBank)",
+    "VIB": "Ngân hàng TMCP Quốc tế Việt Nam (VIB)",
+    "MSB": "Ngân hàng TMCP Hàng Hải Việt Nam (MSB)",
+    "SSB": "Ngân hàng TMCP Đông Nam Á (SeABank)",
+    "NAB": "Ngân hàng TMCP Nam Á (Nam A Bank)",
+    "VAB": "Ngân hàng TMCP Việt Á (VietABank)",
+    "BAB": "Ngân hàng TMCP Bắc Á (Bac A Bank)",
+
+    # ------------------ Chứng khoán ------------------
+    "SSI": "CTCP Chứng khoán SSI",
+    "HCM": "CTCP Chứng khoán Thành phố Hồ Chí Minh (HSC)",
+    "VND": "CTCP Chứng khoán VNDIRECT",
+    "VCI": "CTCP Chứng khoán Vietcap",
+    "FTS": "CTCP Chứng khoán FPT",
+    "VDS": "CTCP Chứng khoán Rồng Việt",
+    "CTS": "CTCP Chứng khoán Ngân hàng Công Thương Việt Nam",
+    "BSI": "CTCP Chứng khoán BIDV",
+    "VIX": "CTCP Chứng khoán VIX",
+    "ORS": "CTCP Chứng khoán Tiên Phong",
+    "AGR": "CTCP Chứng khoán Agribank",
+    "TVS": "CTCP Chứng khoán Thiên Việt",
+    "MBS": "CTCP Chứng khoán MB",
+    "SHS": "CTCP Chứng khoán Sài Gòn - Hà Nội",
+    "APS": "CTCP Chứng khoán Châu Á - Thái Bình Dương",
+    "VIG": "CTCP Chứng khoán Thương mại và Công nghiệp Việt Nam",
+    "VCK": "CTCP Chứng khoán VPS",
+    "VPX": "CTCP Chứng khoán VPBank",
+    "TCX": "CTCP Chứng khoán Kỹ thương (TCBS)",
+
+    # ------------------ Bất động sản ------------------
+    "VIC": "Tập đoàn Vingroup - CTCP",
+    "VHM": "CTCP Vinhomes",
+    "NVL": "CTCP Tập đoàn Đầu tư Địa ốc No Va (Novaland)",
+    "PDR": "CTCP Phát triển Bất động sản Phát Đạt",
+    "DXG": "CTCP Tập đoàn Đất Xanh",
+    "KDH": "CTCP Đầu tư và Kinh doanh Nhà Khang Điền",
+    "NLG": "CTCP Đầu tư Nam Long",
+    "DIG": "Tổng CTCP Đầu tư Phát triển Xây dựng (DIC Corp)",
+    "CEO": "CTCP Tập đoàn C.E.O",
+    "HDG": "CTCP Tập đoàn Hà Đô",
+    "TCH": "CTCP Đầu tư Dịch vụ Tài chính Hoàng Huy",
+    "KHG": "CTCP Tập đoàn Khải Hoàn Land",
+    "SCR": "CTCP Địa ốc Sài Gòn Thương Tín (TTC Land)",
+    "HQC": "CTCP Tư vấn - Thương mại - Dịch vụ Địa ốc Hoàng Quân",
+    "IJC": "CTCP Phát triển Hạ tầng Kỹ thuật (Becamex IJC)",
+    "CRE": "CTCP Bất động sản Thế Kỷ (Cen Land)",
+    "NHA": "Tổng Công ty Đầu tư Phát triển Nhà và Đô thị Nam Hà Nội",
+    "HPX": "CTCP Đầu tư Hải Phát",
+    "HDC": "CTCP Phát triển Nhà Bà Rịa - Vũng Tàu (Hodeco)",
+    "NTL": "CTCP Phát triển Đô thị Từ Liêm (Lideco)",
+    "AGG": "CTCP Đầu tư và Phát triển Bất động sản An Gia",
+    "DRH": "CTCP DRH Holdings",
+    "LDG": "CTCP Đầu tư LDG",
+    "QCG": "CTCP Quốc Cường Gia Lai",
+
+    # ------------------ Bất động sản KCN ------------------
+    "KBC": "Tổng Công ty Phát triển Đô thị Kinh Bắc - CTCP",
+    "IDC": "Tổng Công ty IDICO - CTCP",
+    "SZC": "CTCP Sonadezi Châu Đức",
+    "ITA": "CTCP Đầu tư và Công nghiệp Tân Tạo",
+    "GVR": "Tập đoàn Công nghiệp Cao su Việt Nam - CTCP",
+    "PHR": "CTCP Cao su Phước Hòa",
+    "DPR": "CTCP Cao su Đồng Phú",
+    "LHG": "CTCP Long Hậu",
+    "BCM": "Tổng Công ty Đầu tư và Phát triển Công nghiệp (Becamex IDC)",
+    "VGC": "Tổng Công ty Viglacera - CTCP",
+    "TIP": "CTCP Phát triển Khu Công nghiệp Tín Nghĩa",
+    "SIP": "CTCP Đầu tư Sài Gòn VRG",
+    "DTD": "CTCP Đầu tư Phát triển Thành Đạt",
+    "GEL": "CTCP Hạ tầng GELEX",
+
+    # ------------------ Thép ------------------
+    "HPG": "CTCP Tập đoàn Hòa Phát",
+    "HSG": "CTCP Tập đoàn Hoa Sen",
+    "NKG": "CTCP Thép Nam Kim",
+    "TLH": "CTCP Tập đoàn Thép Tiến Lên",
+    "POM": "CTCP Thép Pomina",
+    "SMC": "CTCP Đầu tư Thương mại SMC",
+    "TVN": "Tổng Công ty Thép Việt Nam - CTCP (VNSTEEL)",
+    "VGS": "CTCP Ống thép Việt Đức VG PIPE",
+
+    # ------------------ Dầu khí ------------------
+    "GAS": "Tổng Công ty Khí Việt Nam - CTCP (PV GAS)",
+    "PLX": "Tập đoàn Xăng dầu Việt Nam (Petrolimex)",
+    "PVD": "Tổng CTCP Khoan và Dịch vụ Khoan Dầu khí (PV Drilling)",
+    "PVS": "Tổng CTCP Dịch vụ Kỹ thuật Dầu khí Việt Nam (PTSC)",
+    "BSR": "CTCP Lọc hóa dầu Bình Sơn",
+    "OIL": "Tổng Công ty Dầu Việt Nam - CTCP (PVOIL)",
+    "PVT": "Tổng CTCP Vận tải Dầu khí (PVTrans)",
+    "PVC": "Tổng Công ty Hóa chất và Dịch vụ Dầu khí (PVChem)",
+    "PVB": "CTCP Bọc Ống Dầu khí Việt Nam (PVCoating)",
+    "PVO": "CTCP Dầu nhờn PVOIL",
+
+    # ------------------ Năng lượng / Điện ------------------
+    "POW": "Tổng Công ty Điện lực Dầu khí Việt Nam - CTCP (PV Power)",
+    "REE": "CTCP Cơ Điện Lạnh (REE)",
+    "GEG": "CTCP Điện Gia Lai",
+    "NT2": "CTCP Điện lực Dầu khí Nhơn Trạch 2",
+    "PC1": "CTCP Tập đoàn PC1",
+    "VSH": "CTCP Thủy điện Vĩnh Sơn - Sông Hinh",
+    "TV2": "CTCP Tư vấn Xây dựng Điện 2 (PECC2)",
+    "PPC": "CTCP Nhiệt điện Phả Lại",
+    "QTP": "CTCP Nhiệt điện Quảng Ninh",
+    "HND": "CTCP Nhiệt điện Hải Phòng",
+
+    # ------------------ Bán lẻ ------------------
+    "MWG": "CTCP Đầu tư Thế Giới Di Động",
+    "PNJ": "CTCP Vàng bạc Đá quý Phú Nhuận",
+    "FRT": "CTCP Bán lẻ Kỹ thuật số FPT (FPT Retail)",
+    "DGW": "CTCP Thế Giới Số (Digiworld)",
+    "PET": "Tổng CTCP Dịch vụ Tổng hợp Dầu khí (Petrosetco)",
+    "VRE": "CTCP Vincom Retail",
+    "MSN": "CTCP Tập đoàn Masan",
+    "SAB": "Tổng CTCP Bia - Rượu - Nước giải khát Sài Gòn (Sabeco)",
+    "VNM": "CTCP Sữa Việt Nam (Vinamilk)",
+    "HAX": "CTCP Dịch vụ Ô tô Hàng Xanh (Haxaco)",
+
+    # ------------------ Công nghệ / Viễn thông ------------------
+    "FPT": "CTCP FPT",
+    "CMG": "CTCP Tập đoàn Công nghệ CMC",
+    "ELC": "CTCP Công nghệ - Viễn thông ELCOM",
+    "VTP": "Tổng CTCP Bưu chính Viettel (Viettel Post)",
+    "CTR": "Tổng CTCP Công trình Viettel (Viettel Construction)",
+    "VGI": "Tổng CTCP Đầu tư Quốc tế Viettel (Viettel Global)",
+    "FOX": "CTCP Viễn thông FPT (FPT Telecom)",
+    "TTN": "CTCP Công nghệ và Truyền thông Việt Nam (VNTT)",
+
+    # ------------------ Hóa chất & Phân bón ------------------
+    "DGC": "CTCP Tập đoàn Hóa chất Đức Giang",
+    "DCM": "CTCP Phân bón Dầu khí Cà Mau",
+    "DPM": "Tổng Công ty Phân bón và Hóa chất Dầu khí (Đạm Phú Mỹ)",
+    "CSV": "CTCP Hóa chất Cơ bản Miền Nam",
+    "LAS": "CTCP Supe Phốt phát và Hóa chất Lâm Thao",
+    "DDV": "CTCP DAP - VINACHEM",
+    "BFC": "CTCP Phân bón Bình Điền",
+
+    # ------------------ Thủy sản ------------------
+    "VHC": "CTCP Vĩnh Hoàn",
+    "ANV": "CTCP Nam Việt",
+    "IDI": "CTCP Đầu tư và Phát triển Đa Quốc Gia I.D.I",
+    "FMC": "CTCP Thực phẩm Sao Ta",
+    "CMX": "CTCP Camimex Group",
+    "ACL": "CTCP Xuất nhập khẩu Thủy sản Cửu Long An Giang",
+
+    # ------------------ Dệt may ------------------
+    "TNG": "CTCP Đầu tư và Thương mại TNG",
+    "TCM": "CTCP Dệt may - Đầu tư - Thương mại Thành Công",
+    "GIL": "CTCP Sản xuất Kinh doanh Xuất nhập khẩu Bình Thạnh (Gilimex)",
+    "MSH": "CTCP May Sông Hồng",
+    "STK": "CTCP Sợi Thế Kỷ",
+    "VGT": "Tập đoàn Dệt May Việt Nam (Vinatex)",
+    "ADS": "CTCP Damsan",
+
+    # ------------------ Xây dựng & Đầu tư công ------------------
+    "VCG": "Tổng CTCP Xuất nhập khẩu và Xây dựng Việt Nam (Vinaconex)",
+    "HHV": "CTCP Đầu tư Hạ tầng Giao thông Đèo Cả",
+    "LCG": "CTCP Lizen",
+    "FCN": "CTCP FECON",
+    "C4G": "CTCP Tập đoàn CIENCO4",
+    "G36": "Tổng Công ty 36 - CTCP",
+    "CTD": "CTCP Xây dựng Coteccons",
+    "HBC": "CTCP Tập đoàn Xây dựng Hòa Bình",
+    "HT1": "CTCP Xi măng Vicem Hà Tiên",
+    "KSB": "CTCP Khoáng sản và Xây dựng Bình Dương",
+    "BCC": "CTCP Xi măng Bỉm Sơn",
+    "PLC": "Tổng Công ty Hóa dầu Petrolimex - CTCP",
+    "CII": "CTCP Đầu tư Hạ tầng Kỹ thuật TP.HCM",
+    "HUT": "CTCP Tasco",
+    "CTI": "CTCP Đầu tư Phát triển Cường Thuận IDICO",
+
+    # ------------------ Vận tải & Cảng / Hàng không ------------------
+    "GMD": "CTCP Gemadept",
+    "HAH": "CTCP Vận tải và Xếp dỡ Hải An",
+    "VSC": "CTCP Container Việt Nam (Viconship)",
+    "VOS": "CTCP Vận tải Biển Việt Nam (Vosco)",
+    "GSP": "CTCP Vận tải Sản phẩm khí Quốc tế (Gas Shipping)",
+    "HVN": "Tổng Công ty Hàng không Việt Nam - CTCP (Vietnam Airlines)",
+    "VJC": "CTCP Hàng không Vietjet",
+
+    # ------------------ Nông nghiệp / Đường / Chăn nuôi ------------------
+    "HAG": "CTCP Hoàng Anh Gia Lai",
+    "HNG": "CTCP Nông nghiệp Quốc tế Hoàng Anh Gia Lai",
+    "DBC": "CTCP Tập đoàn Dabaco Việt Nam",
+    "BAF": "CTCP Nông nghiệp BAF Việt Nam",
+    "SBT": "CTCP Thành Thành Công - Biên Hòa (TTC AgriS)",
+    "LSS": "CTCP Mía đường Lam Sơn",
+    "QNS": "CTCP Đường Quảng Ngãi",
+    "SLS": "CTCP Mía đường Sơn La",
+    "PAN": "CTCP Tập đoàn PAN",
+    "TAR": "CTCP Nông nghiệp Công nghệ cao Trung An",
+    "LTG": "CTCP Tập đoàn Lộc Trời",
+    "ASM": "CTCP Tập đoàn Sao Mai",
+    "NAF": "CTCP Nafoods Group",
+
+    # ------------------ Đa ngành / Nhựa / Bảo hiểm / Nước ------------------
+    "GEX": "CTCP Tập đoàn GELEX",
+    "AAA": "CTCP Nhựa An Phát Xanh",
+    "APH": "CTCP Tập đoàn An Phát Holdings",
+    "BMP": "CTCP Nhựa Bình Minh",
+    "NTP": "CTCP Nhựa Thiếu niên Tiền Phong",
+    "BVH": "Tập đoàn Bảo Việt",
+    "MIG": "Tổng CTCP Bảo hiểm Quân Đội (MIC)",
+    "BMI": "Tổng CTCP Bảo Minh",
+    "TDM": "CTCP Nước Thủ Dầu Một",
+    "BWE": "CTCP Nước - Môi trường Bình Dương (Biwase)",
+    "DLG": "CTCP Tập đoàn Đức Long Gia Lai",
+
+    # ------------------ Nhóm Penny bổ sung ------------------
+    "YEG": "CTCP Tập đoàn Yeah1",
+    "OGC": "CTCP Tập đoàn Đại Dương",
+    "JVC": "CTCP Thiết bị Y tế Việt Nhật",
+    "TTF": "CTCP Tập đoàn Kỹ nghệ Gỗ Trường Thành",
+    "AMD": "CTCP Đầu tư và Khoáng sản FLC Stone",
+    "HAI": "CTCP Nông dược H.A.I",
+    "TSC": "CTCP Vật tư Kỹ thuật Nông nghiệp Cần Thơ",
+    "DAH": "CTCP Tập đoàn Khách sạn Đông Á",
+    "TNI": "CTCP Tập đoàn Thành Nam",
+    "C69": "CTCP Xây dựng 1369",
+    "TNT": "CTCP Tập đoàn TNT",
+    "HTN": "CTCP Hưng Thịnh Incons",
+    "C47": "CTCP Xây dựng 47",
+    "CDC": "CTCP Chương Dương",
+    "FIT": "CTCP Tập đoàn F.I.T",
+    "SAM": "CTCP SAM Holdings",
+    "FIR": "CTCP Địa ốc First Real",
+    "DC4": "CTCP Xây dựng DIC Holdings",
+    "HSL": "CTCP Đầu tư Phát triển Thực phẩm Hồng Hà",
+    "MHC": "CTCP MHC",
+    "TLD": "CTCP Đầu tư Xây dựng và Phát triển Đô thị Thăng Long",
+    "CRC": "CTCP Create Capital Việt Nam",
+    "APG": "CTCP Chứng khoán APG",
+    "CTF": "CTCP City Auto",
+    "CCL": "CTCP Đầu tư và Phát triển Đô thị Dầu khí Cửu Long",
+    "TTA": "CTCP Đầu tư Xây dựng và Phát triển Trường Thành",
+    "TNH": "CTCP Tập đoàn Bệnh viện TNH",
+    "NO1": "CTCP Tập đoàn 911",
+    "CLL": "CTCP Cảng Cát Lái",
+    "NBB": "CTCP Đầu tư Năm Bảy Bảy",
+    "VIP": "CTCP Vận tải Xăng dầu VIPCO",
+    "SKG": "CTCP Tàu cao tốc Superdong - Kiên Giang",
+    "TDP": "CTCP Thuận Đức",
+    "HCD": "CTCP Đầu tư Sản xuất và Thương mại HCD",
+    "TTH": "CTCP Thương mại và Dịch vụ Tiến Thành",
+    "DL1": "CTCP Tập đoàn Alpha Seven",
+    "EVG": "CTCP Tập đoàn EverLand",
 }
+
+
+def get_company_name(
+    symbol: str,
+    company_map: dict[str, str] | None = None,
+    fallback: str = "",
+) -> str:
+    """Trả về tên công ty đồng bộ cho một mã chứng khoán / chỉ số."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return fallback
+    if company_map:
+        name = str(company_map.get(sym) or "").strip()
+        if name and name.upper() != sym:
+            return name
+    name = str(SYMBOL_TO_COMPANY.get(sym) or "").strip()
+    if name and name.upper() != sym:
+        return name
+    return fallback
+
+
+def format_symbol_label(
+    symbol: str,
+    company_map: dict[str, str] | None = None,
+) -> str:
+    """Định dạng thống nhất 'MÃ — Tên công ty' cho selectbox và tiêu đề giữa các tab."""
+    sym = str(symbol or "").strip().upper()
+    comp = get_company_name(sym, company_map=company_map)
+    return f"{sym} — {comp}" if comp else sym
+
